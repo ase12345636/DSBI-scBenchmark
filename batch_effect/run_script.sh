@@ -1,4 +1,4 @@
-source /Group16T/common/ccuc/miniconda3/etc/profile.d/conda.sh
+source /Group16T/common/ccuc/miniconda3_gb10/etc/profile.d/conda.sh
 conda activate sctools
 
 batch_key="batch"

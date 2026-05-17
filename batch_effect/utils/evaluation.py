@@ -9,8 +9,8 @@ from sklearn.metrics import (
 )
 from sklearn.neighbors import NearestNeighbors
 from scipy.stats import entropy
+from scipy.sparse.csgraph import connected_components
 from harmonypy import compute_lisi
-
 
 def compute_overcorrection_from_adata(
     adata,
@@ -147,88 +147,243 @@ def evaluate_embedding_scib(
     precomputed_cluster_key=None,
 ):
     """
-    重新整合的評估管線，包含 scIB 與 scBCN 論文關鍵指標。
-    
-    Parameters
-    ----------
-    compute_oc : bool
-        Whether to compute OverCorrection score (default False, as it's slow)
-    precomputed_cluster_key : str or None
-        Reuse an existing cluster label column from adata.obs (for example
-        'leiden' from resolution search). If provided and present, neighbors/
-        Leiden are not recomputed for NMI/ARI.
+    原生 Python 版的 scIB 評估管線 (無須安裝 scib-metrics/JAX)
+    底層數學邏輯對齊 scIB 官方定義
     """
-    results = {}
-    embedding = ad_tmp.obsm[embed_key]
-    if hasattr(embedding, "toarray"): 
-        embedding = embedding.toarray()
-    
-    y = ad_tmp.obs[celltype_key].astype(str).to_numpy()
-    b = ad_tmp.obs[batch_key].astype(str).to_numpy()
 
-    # -------- Biological conservation (生物保留) --------
-    # 優先重用已存在的聚類標籤，避免評估時重跑 Leiden 導致結果不一致。
-    if precomputed_cluster_key is not None and precomputed_cluster_key in ad_tmp.obs:
-        cluster_labels = ad_tmp.obs[precomputed_cluster_key].astype(str).to_numpy()
+    results = {}
+
+    embedding = ad_tmp.obsm[embed_key]
+    if hasattr(embedding, "toarray"):
+        embedding = embedding.toarray()
+
+    y = ad_tmp.obs[celltype_key].astype(str).values
+    b = ad_tmp.obs[batch_key].astype(str).values
+
+    # ============================================================
+    # 統一 neighbors graph
+    # 確保 clustering / graph connectivity 使用同一 embedding
+    # ============================================================
+
+    need_neighbors = (
+        "neighbors" not in ad_tmp.uns
+        or ad_tmp.uns["neighbors"]["params"].get("use_rep", None) != embed_key
+    )
+
+    if need_neighbors:
+        sc.pp.neighbors(
+            ad_tmp,
+            n_neighbors=15,
+            use_rep=embed_key,
+        )
+
+    # ============================================================
+    # 聚類標籤 (NMI / ARI)
+    # ============================================================
+
+    if (
+        precomputed_cluster_key is not None
+        and precomputed_cluster_key in ad_tmp.obs
+    ):
+        cluster_labels = (
+            ad_tmp.obs[precomputed_cluster_key]
+            .astype(str)
+            .values
+        )
+
     else:
-        sc.pp.neighbors(ad_tmp, n_neighbors=15, use_rep=embed_key)
         sc.tl.leiden(
             ad_tmp,
             resolution=leiden_resolution,
             random_state=random_state,
             key_added="eval_leiden",
         )
-        cluster_labels = ad_tmp.obs["eval_leiden"].astype(str).to_numpy()
 
-    results["NMI"] = normalized_mutual_info_score(y, cluster_labels)
-    results["ARI"] = adjusted_rand_score(y, cluster_labels)
-    
-    # ASW_bio (Cell type Silhouette)
-    sil_samples = silhouette_samples(embedding, y)
-    asw_bio_raw = pd.DataFrame({"ct": y, "sil": sil_samples}).groupby("ct")["sil"].mean().mean()
-    results["ASW_bio"] = abs(asw_bio_raw)
-    # AVG_bio 
-    results["AVG_bio"] = np.mean([results["NMI"], results["ARI"], results["ASW_bio"]])
-
-    # -------- Batch correction (批次校正) --------
-    # ASW_batch (越高代表混合越好)
-    sil_batch = silhouette_samples(embedding, b)
-    asw_batch_raw = pd.DataFrame({"b": b, "sil": sil_batch}).groupby("b")["sil"].mean().mean()
-    results["ASW_batch"] = 1 - abs(asw_batch_raw)
-    
-    # iLISI (原始值) 與 iLISI_N (歸一化得分)
-    ilisi_raw = calculate_lisi(embedding, ad_tmp.obs, batch_key, celltype_key)
-    results["iLISI"] = ilisi_raw
-    
-    # Batch KL (原始散度值)
-    results["BatchKL"] = calculate_batch_kl_py(embedding, b)
-
-    # Graph connectivity
-    # 需要 connectivities；若尚未建立才補算，避免覆寫既有圖。
-    if "connectivities" not in ad_tmp.obsp:
-        sc.pp.neighbors(ad_tmp, n_neighbors=15, use_rep=embed_key)
-
-    graph_conn = 0
-    unique_types = ad_tmp.obs[celltype_key].unique()
-    for l in unique_types:
-        idx = np.where(ad_tmp.obs[celltype_key] == l)[0]
-        if len(idx) > 1:
-            sub_conn = ad_tmp.obsp["connectivities"][np.ix_(idx, idx)].max(axis=1).mean()
-            graph_conn += sub_conn
-    results["GraphConn_celltype"] = graph_conn / len(unique_types)
-
-    results["AVG_batch"] = np.mean([results["ASW_batch"], results["GraphConn_celltype"]])
-
-    # -------- Over-correction (過度校正) --------
-    if compute_oc:
-        if "X_pca" not in ad_tmp.obsm: 
-            sc.pp.pca(ad_tmp)
-        # 取得原始 PCA 的 OC 作為 baseline
-        oc_raw = compute_overcorrection_from_adata(ad_tmp, embed_key="X_pca", celltype_col=celltype_key)
-        # 計算當前 Embedding 的 OC 並與 baseline 相減
-        results["OverCorrection"] = compute_overcorrection_from_adata(
-            ad_tmp, embed_key=embed_key, celltype_col=celltype_key, baseline=oc_raw
+        cluster_labels = (
+            ad_tmp.obs["eval_leiden"]
+            .astype(str)
+            .values
         )
+
+    # ============================================================
+    # Biological conservation
+    # ============================================================
+
+    results["NMI"] = float(
+        normalized_mutual_info_score(y, cluster_labels)
+    )
+
+    results["ARI"] = float(
+        adjusted_rand_score(y, cluster_labels)
+    )
+
+    # ASW bio
+    sil_bio = silhouette_samples(embedding, y)
+
+    # scIB scaling
+    sil_bio_scaled = (sil_bio + 1.0) / 2.0
+
+    results["ASW_bio"] = float(
+        pd.DataFrame({
+            "ct": y,
+            "sil": sil_bio_scaled
+        })
+        .groupby("ct")["sil"]
+        .mean()
+        .mean()
+    )
+
+    results["AVG_bio"] = float(
+        np.mean([
+            results["NMI"],
+            results["ARI"],
+            results["ASW_bio"],
+        ])
+    )
+
+    # ============================================================
+    # Batch correction
+    # ============================================================
+
+    # ------------------------------------------------------------
+    # ASW batch
+    # scIB:
+    # 在每個 cell type 內計算 batch silhouette
+    # 使用 1 - abs(score)
+    # ------------------------------------------------------------
+
+    batch_asw_list = []
+
+    for cell_type in np.unique(y):
+
+        idx = np.where(y == cell_type)[0]
+
+        # 若只有單一 batch 則跳過
+        if len(np.unique(b[idx])) < 2:
+            continue
+
+        sil_batch = silhouette_samples(
+            embedding[idx],
+            b[idx]
+        )
+
+        sil_batch_scaled = 1.0 - np.abs(sil_batch)
+
+        batch_asw_list.append(
+            np.mean(sil_batch_scaled)
+        )
+
+    results["ASW_batch"] = (
+        float(np.mean(batch_asw_list))
+        if batch_asw_list
+        else 0.0
+    )
+
+    # ------------------------------------------------------------
+    # Graph Connectivity
+    # scIB:
+    # 每個 cell type 子圖的最大連通分量比例
+    # ------------------------------------------------------------
+
+    connectivities = ad_tmp.obsp["connectivities"]
+
+    graph_conn_list = []
+
+    for cell_type in np.unique(y):
+
+        idx = np.where(y == cell_type)[0]
+
+        if len(idx) <= 1:
+            continue
+
+        # cell type subgraph
+        subgraph = connectivities[idx, :][:, idx]
+
+        # 避免 sparse edge cases
+        subgraph = subgraph.tocsr()
+
+        n_components, labels_comp = connected_components(
+            subgraph,
+            directed=False,
+        )
+
+        _, counts = np.unique(
+            labels_comp,
+            return_counts=True,
+        )
+
+        lcc_ratio = counts.max() / len(idx)
+
+        graph_conn_list.append(lcc_ratio)
+
+    results["GraphConn_celltype"] = (
+        float(np.mean(graph_conn_list))
+        if graph_conn_list
+        else 0.0
+    )
+
+    # ------------------------------------------------------------
+    # iLISI
+    # 修正為 scIB normalized version
+    # ------------------------------------------------------------
+
+    ilisi_res = compute_lisi(
+        embedding,
+        ad_tmp.obs,
+        [batch_key],
+    )
+
+    ilisi_raw = float(
+        np.median(ilisi_res[:, 0])
+    )
+
+    n_batches = len(np.unique(b))
+
+    if n_batches > 1:
+        ilisi_scaled = (
+            (ilisi_raw - 1.0)
+            / (n_batches - 1.0)
+        )
+    else:
+        ilisi_scaled = 1.0
+
+    results["iLISI"] = float(ilisi_scaled)
+
+    # ------------------------------------------------------------
+    # AVG batch
+    # ------------------------------------------------------------
+
+    results["AVG_batch"] = float(
+        np.mean([
+            results["ASW_batch"],
+            results["GraphConn_celltype"],
+        ])
+    )
+
+    # ============================================================
+    # Over-correction
+    # ============================================================
+
+    if compute_oc:
+
+        if "X_pca" not in ad_tmp.obsm:
+            sc.pp.pca(ad_tmp)
+
+        oc_raw = compute_overcorrection_from_adata(
+            ad_tmp,
+            embed_key="X_pca",
+            celltype_col=celltype_key,
+        )
+
+        results["OverCorrection"] = (
+            compute_overcorrection_from_adata(
+                ad_tmp,
+                embed_key=embed_key,
+                celltype_col=celltype_key,
+                baseline=oc_raw,
+            )
+        )
+
     else:
         results["OverCorrection"] = np.nan
 
