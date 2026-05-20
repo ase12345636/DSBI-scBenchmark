@@ -19,6 +19,13 @@ bash run_script.sh \
     --celltype_key celltype \
     --n_runs 5 
 
+bash run_script.sh \
+    --dataset_path /Group16T/common/ccuc/data/human_retina.h5ad \
+    --save_path /Group16T/common/ccuc/MyWork/result/retina/ \
+    --batch_key donor_id \
+    --celltype_key cell_type \
+    --n_runs 5
+
 # # Perturbed datasets (with OC calculation)
 # bash run_script.sh \
 #     --dataset_path /Group16T/common/ccuc/data/Immune_GOBP_perturbed_CD4T.h5ad \

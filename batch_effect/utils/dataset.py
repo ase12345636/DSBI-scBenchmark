@@ -18,7 +18,11 @@ def preprocess_adata(adata, label_col, batch_col,
     ad_bc.var["mt"] = ad_bc.var_names.str.upper().str.startswith("MT-")
     sc.pp.calculate_qc_metrics(ad_bc, qc_vars=["mt"], percent_top=None, log1p=False, inplace=True)
     ad_bc = ad_bc[ad_bc.obs["pct_counts_mt"] < mt_threshold].copy()
-    
+
+    # Preserve raw counts in a layer for tools that require integer counts (e.g. scVI).
+    # HVG subset later will carry this layer along automatically.
+    ad_bc.layers["counts"] = ad_bc.X.copy()
+
     # Normalize and log-transform
     sc.pp.normalize_total(ad_bc, target_sum=target_sum)
     sc.pp.log1p(ad_bc)
@@ -38,4 +42,52 @@ def preprocess_adata(adata, label_col, batch_col,
     
     print(f"Filtered shape: {ad_bc.shape}")
     
+    return ad_bc
+
+
+def preprocess_log_only(adata, label_col, batch_col,
+                        min_genes=200, min_cells=3,
+                        mt_threshold=5.0, target_sum=1e4):
+    """Cell/gene QC filter + normalize_total + log1p only (no HVG selection).
+
+    Used by tools (e.g. Scanorama) whose published protocol expects the full
+    log-normalized gene matrix and performs its own internal HVG selection.
+    """
+    ad_bc = adata.copy()
+
+    sc.pp.filter_cells(ad_bc, min_genes=min_genes)
+    sc.pp.filter_genes(ad_bc, min_cells=min_cells)
+
+    ad_bc.var["mt"] = ad_bc.var_names.str.upper().str.startswith("MT-")
+    sc.pp.calculate_qc_metrics(ad_bc, qc_vars=["mt"], percent_top=None,
+                               log1p=False, inplace=True)
+    ad_bc = ad_bc[ad_bc.obs["pct_counts_mt"] < mt_threshold].copy()
+
+    ad_bc.layers["counts"] = ad_bc.X.copy()
+
+    sc.pp.normalize_total(ad_bc, target_sum=target_sum)
+    sc.pp.log1p(ad_bc)
+
+    print(f"Filtered shape (log-only, all genes): {ad_bc.shape}")
+    return ad_bc
+
+
+def preprocess_filter_only(adata, label_col, batch_col,
+                           min_genes=200, min_cells=3, mt_threshold=5.0):
+    """Cell/gene QC filter only; X stays as raw integer counts.
+
+    Used by tools (e.g. Seurat) whose published protocol performs per-batch
+    NormalizeData / FindVariableFeatures / ScaleData internally.
+    """
+    ad_bc = adata.copy()
+
+    sc.pp.filter_cells(ad_bc, min_genes=min_genes)
+    sc.pp.filter_genes(ad_bc, min_cells=min_cells)
+
+    ad_bc.var["mt"] = ad_bc.var_names.str.upper().str.startswith("MT-")
+    sc.pp.calculate_qc_metrics(ad_bc, qc_vars=["mt"], percent_top=None,
+                               log1p=False, inplace=True)
+    ad_bc = ad_bc[ad_bc.obs["pct_counts_mt"] < mt_threshold].copy()
+
+    print(f"Filtered shape (raw counts): {ad_bc.shape}")
     return ad_bc

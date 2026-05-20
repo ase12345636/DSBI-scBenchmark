@@ -54,36 +54,44 @@ cat(sprintf("Dataset: %d cells, %d genes\n", ncol(counts), nrow(counts)))
 
 timer_start <- proc.time()
 
+# `counts` here are raw integer counts (Python side uses preprocess_filter_only).
 seurat_obj <- CreateSeuratObject(counts = counts, meta.data = metadata)
-seurat_obj[["RNA"]]$data <- counts
-
-all_features <- rownames(seurat_obj)
-VariableFeatures(seurat_obj) <- all_features
-
-seurat_obj <- ScaleData(seurat_obj, verbose = FALSE)
-seurat_obj <- RunPCA(seurat_obj, npcs = 50, verbose = FALSE, seed.use = args$seed)
 
 # ============================================================
-# 5. RPCA Integration
+# 5. Per-batch NormalizeData / HVG / Scale / PCA, then RPCA integration
+#    (standard Seurat v5 RPCA workflow)
 # ============================================================
 
 seurat_list <- SplitObject(seurat_obj, split.by = args$batch_key)
 
 seurat_list <- lapply(seurat_list, function(x) {
-  VariableFeatures(x) <- all_features
-  x <- ScaleData(x, features = all_features, verbose = FALSE)
-  x <- RunPCA(x, features = all_features, npcs = 50, verbose = FALSE, seed.use = args$seed)
+  x <- NormalizeData(x, verbose = FALSE)
+  x <- FindVariableFeatures(x, selection.method = "vst",
+                            nfeatures = 2000, verbose = FALSE)
+  return(x)
+})
+
+integration_features <- SelectIntegrationFeatures(
+  object.list = seurat_list, nfeatures = 2000, verbose = FALSE
+)
+
+seurat_list <- lapply(seurat_list, function(x) {
+  x <- ScaleData(x, features = integration_features, verbose = FALSE)
+  x <- RunPCA(x, features = integration_features, npcs = 50,
+              verbose = FALSE, seed.use = args$seed)
   return(x)
 })
 
 anchors <- FindIntegrationAnchors(
-  seurat_list, anchor.features = all_features,
+  seurat_list, anchor.features = integration_features,
   reduction = "rpca", dims = 1:50, verbose = FALSE
 )
 seurat_integrated <- IntegrateData(anchors, dims = 1:50, verbose = FALSE)
 
+DefaultAssay(seurat_integrated) <- "integrated"
 seurat_integrated <- ScaleData(seurat_integrated, verbose = FALSE)
-seurat_integrated <- RunPCA(seurat_integrated, npcs = 50, verbose = FALSE, seed.use = args$seed)
+seurat_integrated <- RunPCA(seurat_integrated, npcs = 50,
+                            verbose = FALSE, seed.use = args$seed)
 
 timer_end <- proc.time()
 algo_seconds <- (timer_end - timer_start)["elapsed"]

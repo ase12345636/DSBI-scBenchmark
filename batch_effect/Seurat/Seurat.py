@@ -6,6 +6,7 @@ import pandas as pd
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.pipeline import (create_argument_parser, run_integration_pipeline,
                             export_adata_for_r, import_embedding_from_r)
+from utils.dataset import preprocess_filter_only
 
 R_SCRIPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Seurat.R")
 R_EXCHANGE_DIR_NAME = "r_exchange"
@@ -50,4 +51,6 @@ if __name__ == '__main__':
     run_integration_pipeline(
         "Seurat", integrate_seurat, "X_seurat", args,
         r_exchange_dir=r_exchange_dir,
+        preprocess_fn=preprocess_filter_only,
+        run_pca=False,
     )

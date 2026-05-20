@@ -12,6 +12,12 @@ from utils.dataset import preprocess_adata
 from utils.evaluation import evaluate_embedding_scib
 from utils.function import find_best_leiden_resolution, MemoryTracker
 
+# Default preprocessing: normalize + log + per-batch HVG (2000 genes).
+# Used by tools whose published protocol expects log-normalized HVG input
+# (Harmony / scDML / scCobra). Tools with different requirements (scVI,
+# Scanorama, Seurat) override this via the `preprocess_fn` kwarg of
+# `run_integration_pipeline`.
+
 
 # ============================================================
 # Argument Parsing
@@ -40,11 +46,21 @@ def load_dataset(dataset_path):
     return sc.read_h5ad(dataset_path)
 
 
-def preprocess_or_copy(adata_raw, celltype_key, batch_key, compute_oc, atac):
-    """Preprocess data or copy raw (for ATAC / OC modes that skip preprocessing)."""
+def preprocess_or_copy(adata_raw, celltype_key, batch_key, compute_oc, atac,
+                       preprocess_fn=None):
+    """Preprocess data or copy raw (for ATAC / OC modes that skip preprocessing).
+
+    Parameters
+    ----------
+    preprocess_fn : callable or None
+        Optional preprocessing function with signature
+        ``fn(adata, label_col, batch_col) -> AnnData``.
+        Defaults to ``preprocess_adata`` (log + HVG-2000).
+    """
     if compute_oc or atac:
         return adata_raw.copy()
-    return preprocess_adata(adata_raw.copy(), celltype_key, batch_key)
+    fn = preprocess_fn if preprocess_fn is not None else preprocess_adata
+    return fn(adata_raw.copy(), celltype_key, batch_key)
 
 
 def generate_seed():
@@ -156,7 +172,8 @@ def cleanup_r_exchange(r_exchange_dir):
 
 
 def run_integration_pipeline(tool_name, integrate_fn, embed_key, args,
-                             run_pca=True, r_exchange_dir=None):
+                             run_pca=True, r_exchange_dir=None,
+                             preprocess_fn=None):
     """
     Run the full integration-evaluation pipeline for a batch correction tool.
 
@@ -191,7 +208,8 @@ def run_integration_pipeline(tool_name, integrate_fn, embed_key, args,
         os.makedirs(run_out_path, exist_ok=True)
 
         adata = preprocess_or_copy(adata_raw, args.celltype_key, args.batch_key,
-                                    args.compute_oc, args.ATAC)
+                                    args.compute_oc, args.ATAC,
+                                    preprocess_fn=preprocess_fn)
         print(f"Preprocessed dataset: {adata.shape[0]} cells, {adata.shape[1]} genes")
 
         adata.obs_names_make_unique()
