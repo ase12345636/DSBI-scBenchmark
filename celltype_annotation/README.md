@@ -48,16 +48,29 @@ pip install celltypist==1.7.1
 
 ## CHETAH
 
-CHETAH is isolated from Seurat and SingleR because all three have independent
-R/Bioconductor dependency trees:
+Create CHETAH from scratch in its own environment. Remove any old `CHETAH`
+environment first; all R and Bioconductor dependencies are then installed by
+Conda/Bioconda in one transaction:
 
 ```bash
-conda create -n CHETAH -c conda-forge \
-  python=3.10 pip r-base=4.3 r-argparse r-matrix r-biocmanager -y
+conda create -n CHETAH \
+  --copy --override-channels --strict-channel-priority \
+  -c conda-forge -c bioconda \
+  python=3.10 pip \
+  r-base=4.3 r-argparse r-matrix \
+  r-data.table r-htmlwidgets r-plotly r-shiny \
+  bioconductor-data-packages=20260207=hdfd78af_0 \
+  bioconductor-genomeinfodbdata=1.2.11=r43hdfd78af_0 \
+  bioconductor-chetah=1.18 \
+  bioconductor-singlecellexperiment=1.24 \
+  bioconductor-summarizedexperiment=1.32 \
+  bioconductor-genomicranges=1.54 \
+  bioconductor-delayedarray=0.28 \
+  -y
+
 conda activate CHETAH
-pip install "numpy<2" pandas scipy scikit-learn \
+python -m pip install "numpy<2" pandas scipy scikit-learn \
   anndata scanpy matplotlib seaborn umap-learn
-Rscript -e 'BiocManager::install(c("SingleCellExperiment", "CHETAH"), ask=FALSE, update=FALSE)'
 ```
 
 ## Seurat
@@ -77,10 +90,18 @@ pip install "numpy<2" pandas scipy scikit-learn \
 ## SingleR
 
 ```bash
-conda create -n SingleR -c conda-forge -c bioconda \
-  python=3.10 pip r-base=4.3 r-argparse r-matrix r-biocmanager \
-  bioconductor-singler bioconductor-singlecellexperiment \
-  bioconductor-scran -y
+conda create -n SingleR \
+  -c conda-forge -c bioconda \
+  --strict-channel-priority \
+  python=3.10 \
+  r-base=4.4 \
+  r-argparse \
+  r-matrix \
+  r-biocmanager \
+  bioconductor-singler=2.8.0 \
+  bioconductor-singlecellexperiment=1.28.0 \
+  bioconductor-scran=1.34.0 \
+  -y
 conda activate SingleR
 pip install "numpy<2" pandas scipy scikit-learn \
   anndata scanpy matplotlib seaborn umap-learn

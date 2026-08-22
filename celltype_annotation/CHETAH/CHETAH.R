@@ -41,13 +41,30 @@ log_normalize <- function(matrix) {
   normalized
 }
 
-make_sce <- function(data) {
+make_query_sce <- function(data) {
   SingleCellExperiment(
-    assays = list(
-      counts = data$matrix,
-      logcounts = log_normalize(data$matrix)
-    ),
+    assays = list(logcounts = log_normalize(data$matrix)),
     colData = DataFrame(data$metadata)
+  )
+}
+
+make_reference_profiles <- function(matrix, labels) {
+  labels <- as.character(labels)
+  levels <- sort(unique(labels))
+  group_id <- match(labels, levels)
+  membership <- sparseMatrix(
+    i = seq_along(group_id), j = group_id, x = 1,
+    dims = c(length(group_id), length(levels))
+  )
+  normalized <- log_normalize(matrix)
+  group_sizes <- tabulate(group_id, nbins = length(levels))
+  profiles <- normalized %*% membership %*%
+    Diagonal(x = 1 / group_sizes)
+  colnames(profiles) <- levels
+
+  SingleCellExperiment(
+    assays = list(logcounts = as(profiles, "dgCMatrix")),
+    colData = DataFrame(celltypes = levels, row.names = levels)
   )
 }
 
@@ -56,23 +73,52 @@ if (args$task == "train_reference") {
   if (!(args$label_col %in% colnames(data$metadata))) {
     stop(sprintf("Label column '%s' not found in training metadata", args$label_col))
   }
-  reference <- make_sce(data)
-  reference$celltypes <- as.character(data$metadata[[args$label_col]])
+  original_cells <- ncol(data$matrix)
+  reference <- make_reference_profiles(
+    data$matrix, data$metadata[[args$label_col]]
+  )
   saveRDS(reference, file.path(args$save_path, "reference.rds"))
-  cat(sprintf("[CHETAH] reference: %d cells x %d genes\n", ncol(reference), nrow(reference)))
+  cat(sprintf(
+    "[CHETAH] aggregated %d reference cells into %d cell-type profiles (%d genes)\n",
+    original_cells, ncol(reference), nrow(reference)
+  ))
 } else {
   if (is.null(args$reference_rds)) stop("--reference_rds is required for prediction")
   reference <- readRDS(args$reference_rds)
   query_data <- load_exchange(args$input_dir)
-  query <- make_sce(query_data)
+  query <- make_query_sce(query_data)
   common_genes <- intersect(rownames(reference), rownames(query))
   if (length(common_genes) < 2) stop("Fewer than two genes overlap reference and query")
 
-  annotated <- CHETAHclassifier(
-    input = query[common_genes, ],
-    ref_cells = reference[common_genes, ]
-  )
-  labels <- as.character(annotated$celltype_CHETAH)
+  chunk_size <- 10000L
+  starts <- seq.int(1L, ncol(query), by = chunk_size)
+  if (length(starts) > 1L && ncol(query) - tail(starts, 1L) + 1L < 100L) {
+    starts <- head(starts, -1L)
+  }
+  if (length(starts) > 1L) {
+    cat(sprintf(
+      "[CHETAH] predicting %d query cells in %d chunks\n",
+      ncol(query), length(starts)
+    ))
+  }
+
+  label_parts <- vector("list", length(starts))
+  for (i in seq_along(starts)) {
+    first <- starts[[i]]
+    last <- if (i < length(starts)) starts[[i + 1L]] - 1L else ncol(query)
+    annotated <- CHETAHclassifier(
+      input = query[common_genes, first:last, drop = FALSE],
+      ref_profiles = reference[common_genes, ],
+      ref_ct = "celltypes",
+      input_c = "logcounts",
+      ref_c = "logcounts",
+      plot.tree = FALSE
+    )
+    label_parts[[i]] <- as.character(annotated$celltype_CHETAH)
+    rm(annotated)
+    gc(verbose = FALSE)
+  }
+  labels <- unlist(label_parts, use.names = FALSE)
   labels[is.na(labels) | labels == ""] <- "Unknown"
   write.csv(
     data.frame(

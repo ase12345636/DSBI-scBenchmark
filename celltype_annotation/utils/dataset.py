@@ -32,13 +32,14 @@ def is_count_matrix(matrix, sample_size=10000, tolerance=1e-6):
     )
 
 
-def normalize_log1p(adata, target_sum=1e4):
+def normalize_log1p(adata, target_sum=1e4, *, copy=True):
     """Normalize raw counts to 10,000 counts/cell and log1p-transform.
 
     Matrices that already contain non-integer values are treated as processed
-    expression and returned unchanged.
+    expression and returned unchanged. Set copy=False only when the caller
+    already owns a disposable AnnData copy.
     """
-    out = adata.copy()
+    out = adata.copy() if copy else adata
     if is_count_matrix(out.X):
         sc.pp.normalize_total(out, target_sum=target_sum)
         sc.pp.log1p(out)
@@ -47,7 +48,9 @@ def normalize_log1p(adata, target_sum=1e4):
 
 def prepare_umap(adata, seed, n_top_genes=2000):
     """Compute a test-expression UMAP without dropping or reordering cells."""
-    vis = normalize_log1p(adata)
+    # This runs after prediction/evaluation on a disposable per-run AnnData.
+    # Reusing it avoids another full copy of a potentially very large query.
+    vis = normalize_log1p(adata, copy=False)
 
     if vis.n_obs < 3:
         raise ValueError("At least three test cells are required to compute UMAP")

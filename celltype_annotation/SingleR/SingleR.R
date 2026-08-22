@@ -54,12 +54,29 @@ make_sce <- function(data, label_col = NULL) {
 
 if (args$task == "train_reference") {
   data <- load_exchange(args$input_dir)
-  reference <- make_sce(data, args$label_col)
+  if (!(args$label_col %in% colnames(data$metadata))) {
+    stop(sprintf("Label column '%s' not found in training metadata", args$label_col))
+  }
+  labels <- as.character(data$metadata[[args$label_col]])
+  original_cells <- ncol(data$matrix)
+  normalized <- log_normalize(data$matrix)
+  data$matrix <- NULL
+  gc(verbose = FALSE)
+  reference <- aggregateReference(
+    ref = normalized,
+    labels = labels,
+    ncenters = 20L,
+    ntop = min(1000L, nrow(normalized)),
+    BPPARAM = BiocParallel::SerialParam()
+  )
   saveRDS(
-    list(reference = reference, label_col = args$label_col),
+    list(reference = reference, label_col = "label"),
     file.path(args$save_path, "reference.rds")
   )
-  cat(sprintf("[SingleR] reference: %d cells x %d genes\n", ncol(reference), nrow(reference)))
+  cat(sprintf(
+    "[SingleR] aggregated %d reference cells into %d profiles (%d genes)\n",
+    original_cells, ncol(reference), nrow(reference)
+  ))
 } else {
   if (is.null(args$reference_rds)) stop("--reference_rds is required for prediction")
   reference_object <- readRDS(args$reference_rds)
@@ -70,20 +87,47 @@ if (args$task == "train_reference") {
 
   common_genes <- intersect(rownames(reference), rownames(query))
   if (length(common_genes) < 2) stop("Fewer than two genes overlap reference and query")
-  de_method <- if (requireNamespace("scran", quietly = TRUE)) "wilcox" else "classic"
-  prediction <- SingleR(
-    test = query[common_genes, ],
-    ref = reference[common_genes, ],
-    labels = as.character(colData(reference)[[label_col]]),
-    assay.type.test = "logcounts",
-    assay.type.ref = "logcounts",
-    de.method = de_method
-  )
 
-  labels <- as.character(prediction$pruned.labels)
-  fallback <- is.na(labels) | labels == ""
-  labels[fallback] <- as.character(prediction$labels[fallback])
-  labels[is.na(labels) | labels == ""] <- "Unknown"
+  chunk_size <- 10000L
+  starts <- seq.int(1L, ncol(query), by = chunk_size)
+  if (length(starts) > 1L && ncol(query) - tail(starts, 1L) + 1L < 100L) {
+    starts <- head(starts, -1L)
+  }
+  if (length(starts) > 1L) {
+    cat(sprintf(
+      "[SingleR] predicting %d query cells in %d chunks\n",
+      ncol(query), length(starts)
+    ))
+  }
+
+  label_parts <- vector("list", length(starts))
+  score_parts <- vector("list", length(starts))
+  for (i in seq_along(starts)) {
+    first <- starts[[i]]
+    last <- if (i < length(starts)) starts[[i + 1L]] - 1L else ncol(query)
+    prediction <- SingleR(
+      test = query[common_genes, first:last, drop = FALSE],
+      ref = reference[common_genes, ],
+      labels = as.character(colData(reference)[[label_col]]),
+      assay.type.test = "logcounts",
+      assay.type.ref = "logcounts",
+      de.method = "classic",
+      num.threads = 1L,
+      BPPARAM = BiocParallel::SerialParam()
+    )
+
+    chunk_labels <- as.character(prediction$pruned.labels)
+    fallback <- is.na(chunk_labels) | chunk_labels == ""
+    chunk_labels[fallback] <- as.character(prediction$labels[fallback])
+    chunk_labels[is.na(chunk_labels) | chunk_labels == ""] <- "Unknown"
+    label_parts[[i]] <- chunk_labels
+    score_parts[[i]] <- as.data.frame(
+      as.matrix(prediction$scores), check.names = FALSE
+    )
+    rm(prediction)
+    gc(verbose = FALSE)
+  }
+  labels <- unlist(label_parts, use.names = FALSE)
   write.csv(
     data.frame(
       barcode = query_data$barcodes,
@@ -95,7 +139,7 @@ if (args$task == "train_reference") {
     quote = TRUE
   )
 
-  scores <- as.data.frame(as.matrix(prediction$scores), check.names = FALSE)
+  scores <- do.call(rbind, score_parts)
   scores <- cbind(barcode = query_data$barcodes, scores)
   write.csv(
     scores,
