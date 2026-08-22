@@ -83,7 +83,7 @@ def preprocess_filter_only(adata, label_col, batch_col,
 
     sc.pp.filter_cells(ad_bc, min_genes=min_genes)
     sc.pp.filter_genes(ad_bc, min_cells=min_cells)
-
+    
     ad_bc.var["mt"] = ad_bc.var_names.str.upper().str.startswith("MT-")
     sc.pp.calculate_qc_metrics(ad_bc, qc_vars=["mt"], percent_top=None,
                                log1p=False, inplace=True)

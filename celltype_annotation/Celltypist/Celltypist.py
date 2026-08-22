@@ -1,4 +1,4 @@
-"""Celltypist cell type annotation benchmark."""
+"""CellTypist reference-training cell type annotation benchmark."""
 
 import os
 import sys
@@ -7,91 +7,64 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import celltypist
 import numpy as np
-from scipy import sparse as sp
 
-from utils.label_utils import get_ground_truth_column, standardize_labels_series
+from utils.dataset import normalize_log1p
 from utils.pipeline import (
-    create_argument_parser, run_annotation_pipeline,
-    ensure_dir, load_adata, resolve_label_col, seed_python_numpy,
+    SCORE_CLASSES_KEY,
+    SCORE_KEY,
+    create_argument_parser,
+    run_annotation_pipeline,
+    seed_python_numpy,
 )
 
 
-# ============================================================
-# Helpers
-# ============================================================
-
-def _normalize_log1p_10k(adata):
-    norm = adata.copy()
-    x = norm.X
-    if sp.issparse(x):
-        x = x.tocsr()
-        rs = np.asarray(x.sum(axis=1)).reshape(-1)
-        rs[rs == 0] = 1.0
-        x = x.multiply(10000.0 / rs[:, None]).tocsr()
-        x.data = np.log1p(x.data)
-        norm.X = x
-    else:
-        x = np.asarray(x, dtype=np.float32)
-        rs = x.sum(axis=1); rs[rs == 0] = 1.0
-        norm.X = np.log1p(x * (10000.0 / rs)[:, None])
-    return norm
-
-
-def _annotate(adata, model_path):
-    return celltypist.annotate(
-        filename=adata,
-        model=str(model_path),
-    )
-
-
-# ============================================================
-# Train / Predict
-# ============================================================
-
-def train_celltypist(train_path, model_dir, label_col, seed, args):
+def train_celltypist(adata, seed, run_out_path, args):
+    """Train CellTypist on log-normalized reference expression."""
     seed_python_numpy(seed)
-    adata = load_adata(train_path)
-    resolved = resolve_label_col(adata, label_col)
+    reference = normalize_log1p(adata)
     model = celltypist.train(
-        X=adata,
-        labels=resolved,
-        check_expression=False,
+        X=reference,
+        labels=args.train_celltype,
+        check_expression=True,
     )
-    ensure_dir(model_dir)
-    model_path = model_dir / "model.pkl"
-    model.write(str(model_path))
-    return model_path
+    if args.save_models:
+        model_dir = run_out_path / "_model"
+        model_dir.mkdir(parents=True, exist_ok=True)
+        model.write(str(model_dir / "model.pkl"))
+    return model
 
 
-def predict_celltypist(test_path, model_handle, pred_col, seed, args):
-    adata = load_adata(test_path)
-    try:
-        result = _annotate(adata, model_handle)
-    except ValueError as e:
-        if "Invalid expression matrix" not in str(e): raise
-        result = _annotate(_normalize_log1p_10k(adata), model_handle)
+def predict_celltypist(adata, model, pred_key, seed, run_out_path, args):
+    """Annotate query cells and retain CellTypist class probabilities."""
+    query = normalize_log1p(adata)
+    result = celltypist.annotate(filename=query, model=model)
 
-    labels_df = result.predicted_labels.copy()
-    labels_df.index = labels_df.index.astype(str)
-    out = adata.copy()
-    out.obs.index = out.obs.index.astype(str)
-    pred = labels_df["predicted_labels"].reindex(out.obs.index)
-    out.obs[pred_col] = standardize_labels_series(pred.astype(str))
+    predicted = result.predicted_labels.copy()
+    predicted.index = predicted.index.astype(str)
+    adata.obs[pred_key] = (
+        predicted["predicted_labels"]
+        .reindex(adata.obs_names.astype(str))
+        .fillna("Unknown")
+        .astype(str)
+        .values
+    )
 
-    gt_col = get_ground_truth_column(out)
-    if gt_col and gt_col in out.obs.columns:
-        out.obs[gt_col] = standardize_labels_series(out.obs[gt_col].astype(str))
-    return out
+    probabilities = result.probability_matrix.copy()
+    probabilities.index = probabilities.index.astype(str)
+    probabilities = probabilities.reindex(adata.obs_names.astype(str))
+    adata.obsm[SCORE_KEY] = probabilities.to_numpy(dtype=float)
+    adata.uns[SCORE_CLASSES_KEY] = np.asarray(probabilities.columns, dtype=str)
+    adata.uns["annotation_score_type"] = "probabilities"
+    return adata
 
-
-# ============================================================
-# Entry point
-# ============================================================
 
 if __name__ == "__main__":
     parser = create_argument_parser("Celltypist")
-    args = parser.parse_args()
+    arguments = parser.parse_args()
     run_annotation_pipeline(
-        "Celltypist", "celltypist_pred",
-        train_celltypist, predict_celltypist, args,
+        "Celltypist",
+        "celltypist_prediction",
+        train_celltypist,
+        predict_celltypist,
+        arguments,
     )

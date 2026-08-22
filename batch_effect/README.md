@@ -49,6 +49,22 @@ pip install scvi-tools
 pip install scanorama
 ```
 
+### SMNN
+```
+pip install mnnpy
+```
+
+SMNN is a supervised method. The benchmark passes `--celltype_key` to SMNN
+for within-cell-type mutual-nearest-neighbor matching, as specified by the
+published method. The same annotation is also used by the common evaluation
+pipeline, so SMNN scores must be reported as supervised results and should not
+be interpreted as directly equivalent to the unsupervised tools.
+
+The wrapper keeps the official defaults (`k=20`, `sigma=1`, cosine
+normalization, and variance adjustment), uses the same log-normalized 2,000-HVG
+input as the other common-preprocessing tools, and evaluates the resulting
+50-dimensional PCA embedding through the shared pipeline.
+
 ### Seurat
 #### Conda
 ```

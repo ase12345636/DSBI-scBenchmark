@@ -97,17 +97,21 @@ def plot_umaps(adata, batch_key, celltype_key, save_path, tool_name):
         plt.close()
 
 
-def evaluate_and_save_metrics(adata, embed_key, batch_key, celltype_key,
+def evaluate_and_save_metrics(adata, adata_pre, embed_key, batch_key, celltype_key,
                                best_resolution, seed, runtime, mem_metrics,
                                save_path, tool_name, compute_oc=False,
                                precomputed_cluster_key=None):
     """Evaluate the embedding, save metrics CSV, and print a summary."""
     metrics = evaluate_embedding_scib(
-        adata, embed_key=embed_key, batch_key=batch_key, celltype_key=celltype_key,
+        adata,
+        embed_key=embed_key,
+        batch_key=batch_key,
+        celltype_key=celltype_key,
         leiden_resolution=best_resolution,
         random_state=seed,
         compute_oc=compute_oc,
         precomputed_cluster_key=precomputed_cluster_key,
+        adata_pre=adata_pre,
     )
     metrics['runtime_seconds'] = runtime
     metrics['best_leiden_resolution'] = best_resolution
@@ -217,6 +221,9 @@ def run_integration_pipeline(tool_name, integrate_fn, embed_key, args,
         if run_pca:
             sc.tl.pca(adata, random_state=seed)
 
+        # Keep a pre-integration snapshot for metrics that compare pre/post data.
+        adata_pre_for_eval = adata.copy()
+
         # Preserve raw PCA so it survives integration methods that overwrite / lose it
         raw_pca = adata.obsm.get('X_pca', None)
         pre_obs_names = adata.obs_names.copy()
@@ -265,7 +272,11 @@ def run_integration_pipeline(tool_name, integrate_fn, embed_key, args,
         plot_umaps(adata, args.batch_key, args.celltype_key, run_out_path, tool_name)
 
         evaluate_and_save_metrics(
-            adata, embed_key, args.batch_key, args.celltype_key,
+            adata,
+            adata_pre_for_eval,
+            embed_key,
+            args.batch_key,
+            args.celltype_key,
             leiden_results['best_resolution'], seed, runtime, mem_metrics,
             run_out_path,
             tool_name,

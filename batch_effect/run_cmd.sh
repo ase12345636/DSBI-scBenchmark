@@ -1,30 +1,31 @@
-bash run_script.sh \
-    --dataset_path /Group16T/raw_data/scCobra/Immune_ALL_human.h5ad \
-    --save_path /Group16T/common/ccuc/MyWork/result/immune/ \
-    --batch_key batch \
-    --celltype_key final_annotation \
-    --n_runs 5
+# bash run_script.sh \
+#     --dataset_path /Group16T/raw_data/scCobra/Immune_ALL_human.h5ad \
+#     --save_path /Group16T/common/ccuc/scQuartz/result/immune/ \
+#     --batch_key batch \
+#     --celltype_key final_annotation \
+#     --n_runs 30
 
 bash run_script.sh \
     --dataset_path /Group16T/raw_data/scCobra/Lung_atlas_public.h5ad \
-    --save_path /Group16T/common/ccuc/MyWork/result/lung/ \
+    --save_path /Group16T/common/ccuc/scQuartz/result/lung/ \
     --batch_key batch \
     --celltype_key cell_type \
-    --n_runs 5 
+    --n_runs 30 
 
 bash run_script.sh \
     --dataset_path /Group16T/raw_data/scCobra/human_pancreas_norm_complexBatch.h5ad \
-    --save_path /Group16T/common/ccuc/MyWork/result/pancreas/ \
+    --save_path /Group16T/common/ccuc/scQuartz/result/pancreas/ \
     --batch_key tech \
     --celltype_key celltype \
-    --n_runs 5 
+    --n_runs 30 
 
 bash run_script.sh \
-    --dataset_path /Group16T/common/ccuc/data/human_retina.h5ad \
-    --save_path /Group16T/common/ccuc/MyWork/result/retina/ \
-    --batch_key donor_id \
-    --celltype_key cell_type \
-    --n_runs 5
+    --dataset_path /Group16T/common/ccuc/scQuartz/data/SubMouseBrain_raw.h5ad \
+    --save_path /Group16T/common/ccuc/scQuartz/result/brain \
+    --batch_key BATCH \
+    --celltype_key celltype \
+    --n_runs 30
+
 
 # # Perturbed datasets (with OC calculation)
 # bash run_script.sh \

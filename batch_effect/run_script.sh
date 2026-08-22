@@ -1,4 +1,4 @@
-source /Group16T/common/ccuc/miniconda3_gb10/etc/profile.d/conda.sh
+source /Group16T/common/ccuc/miniconda3/etc/profile.d/conda.sh
 conda activate sctools
 
 batch_key="batch"
@@ -92,6 +92,14 @@ python3 Scanorama/Scanorama.py \
     --batch_key "$batch_key" \
     --celltype_key "$celltype_key" \
     --run_times "$n_runs" $compute_oc $atac
+
+# echo "Running SMNN supervised batch correction"
+# python3 SMNN/SMNN.py \
+#     --dataset_path "$dataset_path" \
+#     --save_path "$save_path" \
+#     --batch_key "$batch_key" \
+#     --celltype_key "$celltype_key" \
+#     --run_times "$n_runs" $compute_oc $atac
 
 python3 Seurat/Seurat.py \
     --dataset_path "$dataset_path" \
