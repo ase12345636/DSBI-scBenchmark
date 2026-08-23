@@ -5,7 +5,6 @@ classification) objective, following the official tutorial:
   https://scgpt.readthedocs.io/en/latest/tutorial_annotation.html
 """
 
-import copy
 import gc
 import json
 import os
@@ -212,18 +211,28 @@ def _install_torchtext_shim() -> None:
 
 _install_torchtext_shim()
 
+# scGPT 0.2.4 imports IPython only to detect notebooks but does not declare it
+# as a package dependency. Keep command-line runs usable in minimal envs.
+try:
+    import IPython  # noqa: F401
+except ImportError:
+    ipython_mod = types.ModuleType("IPython")
+    ipython_mod.get_ipython = lambda: None
+    ipython_mod.version_info = (0, 0)
+    sys.modules["IPython"] = ipython_mod
+
 import numpy as np
 import pandas as pd
 import torch
-from scipy.sparse import issparse
+from scipy.sparse import csr_matrix, issparse
 from sklearn.model_selection import train_test_split
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
 
 from scgpt.model import TransformerModel
 from scgpt.tokenizer import tokenize_and_pad_batch, random_mask_value
-from scgpt.tokenizer.gene_tokenizer import GeneVocab
-from scgpt.preprocess import Preprocessor
+from scgpt.tokenizer.gene_tokenizer import GeneVocab, pad_batch
+from scgpt.preprocess import Preprocessor, _digitize
 from scgpt.utils import set_seed
 
 from utils.label_utils import get_broad_type
@@ -237,11 +246,12 @@ from utils.scgpt_compat import (
 warnings.filterwarnings("ignore")
 
 # ============================================================
-# Default Hyper-parameters
+# Benchmark CLI defaults. Batch size 16 is the memory-safe exception;
+# the remaining values follow the official annotation tutorial.
 # ============================================================
 
 DEFAULT_EPOCHS = 10
-DEFAULT_BATCH_SIZE = 64
+DEFAULT_BATCH_SIZE = 16
 DEFAULT_LR = 1e-4
 DEFAULT_SCHEDULE_RATIO = 0.9
 DEFAULT_MAX_SEQ_LEN = 3001
@@ -279,36 +289,156 @@ def _preprocess_adata(adata, vocab):
     ]
     adata = adata[:, adata.var["id_in_vocab"] >= 0].copy()
 
-    preprocessor = Preprocessor(
-        use_key="X",
-        normalize_total=False,
-        binning=DEFAULT_N_BINS,
-    )
+    preprocessor = Preprocessor(normalize_total=False)
     preprocessor(adata, batch_key=None)
+    binned, bin_edges = sparse_safe_binning(adata.X, DEFAULT_N_BINS)
+    adata.layers["X_binned"] = binned
+    adata.obsm["bin_edges"] = bin_edges
     return adata
+
+
+def sparse_safe_binning(matrix, n_bins, progress_interval=2000):
+    """Reproduce scGPT's row-wise binning without densifying sparse input.
+
+    The upstream preprocessor converts the entire expression matrix to a dense
+    array before iterating over cells. This implementation uses the same
+    ``np.quantile`` and scGPT ``_digitize`` calls, in the same row order, so
+    it consumes the same random numbers and produces the same binned values
+    while visiting only stored non-zero entries for sparse matrices.
+    """
+    if not isinstance(n_bins, int):
+        raise ValueError(f"Binning arg must be an integer, but got {n_bins}.")
+
+    quantiles = np.linspace(0, 1, n_bins - 1)
+    bin_edges = []
+    all_zero_rows = 0
+
+    if issparse(matrix):
+        source = matrix.tocsr(copy=True)
+        source.sum_duplicates()
+        source.eliminate_zeros()
+        source.sort_indices()
+        if source.data.size and source.data.min() < 0:
+            raise ValueError(
+                f"Assuming non-negative data, but got min value {source.data.min()}."
+            )
+
+        binned_data = np.empty(source.data.shape, dtype=np.int64)
+        for row_index in range(source.shape[0]):
+            first = source.indptr[row_index]
+            last = source.indptr[row_index + 1]
+            non_zero_row = source.data[first:last]
+            if non_zero_row.size == 0:
+                all_zero_rows += 1
+                bin_edges.append(np.array([0] * n_bins))
+            else:
+                bins = np.quantile(non_zero_row, quantiles)
+                binned_data[first:last] = _digitize(non_zero_row, bins)
+                bin_edges.append(np.concatenate([[0], bins]))
+            if progress_interval and (row_index + 1) % progress_interval == 0:
+                print(
+                    f"[scGPT] binned {row_index + 1}/{source.shape[0]} cells",
+                    flush=True,
+                )
+
+        binned = csr_matrix(
+            (binned_data, source.indices.copy(), source.indptr.copy()),
+            shape=source.shape,
+        )
+    else:
+        source = np.asarray(matrix)
+        if source.size and source.min() < 0:
+            raise ValueError(
+                f"Assuming non-negative data, but got min value {source.min()}."
+            )
+        binned = np.zeros(source.shape, dtype=np.int64)
+        for row_index, row in enumerate(source):
+            non_zero_ids = row.nonzero()
+            non_zero_row = row[non_zero_ids]
+            if non_zero_row.size == 0:
+                all_zero_rows += 1
+                bin_edges.append(np.array([0] * n_bins))
+            else:
+                bins = np.quantile(non_zero_row, quantiles)
+                binned[row_index, non_zero_ids[0]] = _digitize(
+                    non_zero_row, bins
+                )
+                bin_edges.append(np.concatenate([[0], bins]))
+            if progress_interval and (row_index + 1) % progress_interval == 0:
+                print(
+                    f"[scGPT] binned {row_index + 1}/{source.shape[0]} cells",
+                    flush=True,
+                )
+
+    if all_zero_rows:
+        warnings.warn(
+            f"The input data contains {all_zero_rows} all-zero rows; "
+            "their binned values remain zero."
+        )
+    edges = np.stack(bin_edges) if bin_edges else np.empty((0, n_bins))
+    return binned, edges
+
+
+def _tokenize_matrix(matrix, gene_ids, vocab, pad_value):
+    """Tokenize sparse binned data without a full dense intermediate."""
+    if not issparse(matrix):
+        return tokenize_and_pad_batch(
+            np.asarray(matrix),
+            gene_ids,
+            max_len=DEFAULT_MAX_SEQ_LEN,
+            vocab=vocab,
+            pad_token=PAD_TOKEN,
+            pad_value=pad_value,
+        )
+
+    source = matrix.tocsr(copy=True)
+    source.sum_duplicates()
+    source.eliminate_zeros()
+    source.sort_indices()
+    cls_id = vocab["<cls>"]
+    tokenized_rows = []
+    for row_index in range(source.shape[0]):
+        first = source.indptr[row_index]
+        last = source.indptr[row_index + 1]
+        columns = source.indices[first:last]
+        values = source.data[first:last]
+        genes = gene_ids[columns]
+
+        # Match scGPT.tokenize_batch exactly: prepend CLS, then convert genes
+        # to int64 and expression values to float32 torch tensors.
+        genes = np.insert(genes, 0, cls_id)
+        values = np.insert(values, 0, 0)
+        tokenized_rows.append(
+            (torch.from_numpy(genes).long(), torch.from_numpy(values).float(), None)
+        )
+
+    return pad_batch(
+        tokenized_rows,
+        DEFAULT_MAX_SEQ_LEN,
+        vocab,
+        PAD_TOKEN,
+        pad_value,
+        cls_appended=True,
+    )
 
 
 def _tokenize(adata, gene_ids, vocab, pad_value):
     """Extract binned counts and tokenize."""
-    layer = adata.layers["X_binned"]
-    counts = layer.A if issparse(layer) else layer
-    return tokenize_and_pad_batch(
-        counts, gene_ids,
-        max_len=DEFAULT_MAX_SEQ_LEN,
-        vocab=vocab,
-        pad_token=PAD_TOKEN,
-        pad_value=pad_value,
+    return _tokenize_matrix(
+        adata.layers["X_binned"], gene_ids, vocab, pad_value
     )
 
 
 def _prepare_dataloader(data_pt, batch_size, shuffle=False):
-    num_workers = min(len(os.sched_getaffinity(0)), max(1, batch_size // 2))
+    """Build a loader without worker-process tensor replication."""
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
     return DataLoader(
         dataset=SeqDataset(data_pt),
         batch_size=batch_size,
         shuffle=shuffle,
-        num_workers=num_workers,
-        pin_memory=True,
+        num_workers=0,
+        pin_memory=torch.cuda.is_available(),
     )
 
 
@@ -482,36 +612,35 @@ def _finetune(adata, label_col, pretrained_dir, save_dir, seed, args, device):
     genes = adata.var["gene_name"].tolist()
     gene_ids = np.array(vocab(genes), dtype=int)
 
-    # Train/valid split
+    # Split row indices first so sparse binned data never needs a full dense
+    # 20,000 x n_genes materialization. train_test_split generates the same
+    # row order as splitting the matrix itself with the same random_state.
     layer = adata.layers["X_binned"]
-    all_counts = layer.A if issparse(layer) else layer
-    (train_counts, valid_counts,
+    row_indices = np.arange(adata.n_obs)
+    (train_indices, valid_indices,
      train_ct, valid_ct) = train_test_split(
-        all_counts, celltype_ids,
+        row_indices, celltype_ids,
         test_size=0.1, shuffle=True, random_state=seed,
     )
+    train_counts = layer[train_indices]
+    valid_counts = layer[valid_indices]
 
     # Tokenize
-    tokenized_train = tokenize_and_pad_batch(
-        train_counts, gene_ids,
-        max_len=DEFAULT_MAX_SEQ_LEN, vocab=vocab,
-        pad_token=PAD_TOKEN, pad_value=pad_value,
+    tokenized_train = _tokenize_matrix(
+        train_counts, gene_ids, vocab, pad_value
     )
-    tokenized_valid = tokenize_and_pad_batch(
-        valid_counts, gene_ids,
-        max_len=DEFAULT_MAX_SEQ_LEN, vocab=vocab,
-        pad_token=PAD_TOKEN, pad_value=pad_value,
+    tokenized_valid = _tokenize_matrix(
+        valid_counts, gene_ids, vocab, pad_value
     )
 
     # Build data tensors
     def _make_pt(tok, ct):
         return {
             "gene_ids": tok["genes"],
+            # Preserve the tutorial's RNG state for later query tokenization.
             "values": random_mask_value(
-                tok["values"], mask_ratio=0.0,
-                pad_value=pad_value,
+                tok["values"], mask_ratio=0.0, pad_value=pad_value,
             ),
-            "target_values": tok["values"],
             "celltype_labels": torch.from_numpy(ct).long(),
         }
 
@@ -528,12 +657,12 @@ def _finetune(adata, label_col, pretrained_dir, save_dir, seed, args, device):
     scheduler = torch.optim.lr_scheduler.StepLR(
         optimizer, 1, gamma=args.schedule_ratio,
     )
-    use_amp = True
-    scaler = torch.cuda.amp.GradScaler()
+    use_amp = device.type == "cuda"
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     # Training
     best_val_loss = float("inf")
-    best_model = None
+    best_state = None
     patience = 3
     patience_counter = 0
     for epoch in range(1, args.epochs + 1):
@@ -551,7 +680,10 @@ def _finetune(adata, label_col, pretrained_dir, save_dir, seed, args, device):
               f"valid loss {val_loss:.4f} err {val_err:.4f}")
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            best_model = copy.deepcopy(model)
+            best_state = {
+                name: value.detach().cpu().clone()
+                for name, value in model.state_dict().items()
+            }
             patience_counter = 0
         else:
             patience_counter += 1
@@ -559,19 +691,23 @@ def _finetune(adata, label_col, pretrained_dir, save_dir, seed, args, device):
                 print(f"  Early stopping at epoch {epoch} (no improvement for {patience} epochs)")
                 break
 
-    # Save
-    torch.save(best_model.state_dict(), save_dir / "best_model.pt")
+    # Restore and save the best checkpoint without duplicating the GPU model.
+    if best_state is None:
+        raise RuntimeError("scGPT training did not produce a valid checkpoint")
+    torch.save(best_state, save_dir / "best_model.pt")
+    model.load_state_dict(best_state)
     with open(save_dir / "label_map.json", "w") as f:
-        json.dump({str(k): v for k, v in id2type.items()}, f)
+        json.dump({str(k): str(v) for k, v in id2type.items()}, f)
     with open(save_dir / "gene_list.json", "w") as f:
         json.dump(genes, f)
 
-    del model, train_loader, valid_loader, scaler
+    del train_loader, valid_loader, scaler, optimizer, scheduler, best_state
     gc.collect()
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     return {
-        "model": best_model,
+        "model": model,
         "vocab": vocab,
         "gene_ids": gene_ids,
         "id2type": id2type,

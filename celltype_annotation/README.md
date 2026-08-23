@@ -115,12 +115,14 @@ optional and deliberately omitted to avoid CUDA/build conflicts.
 ```bash
 conda create -n scGPT -c conda-forge python=3.10 pip -y
 conda activate scGPT
-pip install torch==2.1.2 torchvision==0.16.2 \
+python -m pip install torch==2.1.2 torchvision==0.16.2 \
   torchaudio==2.1.2 torchtext==0.16.2 \
   --index-url https://download.pytorch.org/whl/cu121
-pip install "numpy<2" pandas scipy scikit-learn \
-  anndata scanpy matplotlib seaborn umap-learn
-pip install scgpt==0.2.4 gdown
+python -m pip install "numpy<2" pandas scipy scikit-learn \
+  anndata scanpy matplotlib seaborn umap-learn \
+  scgpt==0.2.4 gdown ipython
+python -m pip check
+python -c 'import numpy, torch, scgpt; assert int(numpy.__version__.split(".")[0]) < 2'
 ```
 
 This benchmark uses the official `whole-human` checkpoint recommended by the
@@ -176,6 +178,30 @@ bash run_script.sh \
 
 Do not use the same cells for reference and query when reporting benchmark
 performance; doing so measures training-set performance.
+
+## Defaults and memory safeguards
+
+The wrappers leave package defaults implicit unless a fixed safeguard is
+needed to prevent large sparse references from exhausting RAM or VRAM. These
+exceptions are applied consistently across datasets; they are not tuned using
+query labels:
+
+| Method | Intentional non-default safeguard |
+| --- | --- |
+| CellTypist | Large references use sparse mini-batch SGD and disable mean-centering. |
+| CHETAH | Reference cells are aggregated to at most 200 profiles per cell type. |
+| SingleR | The reference is aggregated with 20 centers per cell type. |
+| Seurat | Reference training is capped at 50,000 stratified cells. |
+| scGPT | Training is capped at 20,000 stratified cells, prediction uses 2,048-cell chunks, and batch size is 16 rather than the tutorial value 32. |
+
+For scGPT, the remaining annotation settings follow the official tutorial:
+3,001 tokens, 10 epochs, 51 expression bins, learning rate `1e-4`, dropout
+`0.2`, and scheduler ratio `0.9`. The sparse binning/tokenization path is an
+implementation optimization only: it preserves the same row order, binning
+formula, random-number consumption and token tensors without materializing
+the full dense matrix. Removing the safeguards above can change effective
+training data or optimizer behavior and can reproduce the observed
+out-of-memory kills.
 
 ## Output
 

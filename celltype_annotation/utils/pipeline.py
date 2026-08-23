@@ -12,6 +12,7 @@ import gc
 import random
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -82,6 +83,17 @@ def generate_seed(run_id, base_seed=None):
 # Python ↔ R Exchange
 # ============================================================
 
+def _rscript_executable():
+    """Prefer Rscript from the active Python/Conda environment."""
+    env_rscript = Path(sys.executable).with_name("Rscript")
+    if env_rscript.is_file():
+        return str(env_rscript)
+    discovered = shutil.which("Rscript")
+    if discovered is None:
+        raise FileNotFoundError("Rscript was not found in the active environment or PATH")
+    return discovered
+
+
 def export_adata_for_r(adata, output_dir, layer=None):
     """Export genes × cells Matrix Market data and matching metadata."""
     output_dir = Path(output_dir)
@@ -107,7 +119,7 @@ def train_r_reference(
     exchange_dir = model_dir / "train_exchange"
     export_adata_for_r(adata, exchange_dir, layer=layer)
     command = [
-        "Rscript", str(r_script),
+        _rscript_executable(), str(r_script),
         "--task", "train_reference",
         "--input_dir", str(exchange_dir),
         "--save_path", str(model_dir),
@@ -138,7 +150,7 @@ def predict_r_reference(
     exchange_dir = predict_dir / "test_exchange"
     export_adata_for_r(adata, exchange_dir, layer=layer)
     command = [
-        "Rscript", str(r_script),
+        _rscript_executable(), str(r_script),
         "--task", "predict",
         "--input_dir", str(exchange_dir),
         "--reference_rds", str(model_path),

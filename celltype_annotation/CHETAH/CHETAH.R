@@ -21,7 +21,7 @@ set.seed(args$seed)
 dir.create(args$save_path, recursive = TRUE, showWarnings = FALSE)
 
 load_exchange <- function(input_dir) {
-  matrix <- as(readMM(file.path(input_dir, "matrix.mtx")), "dgCMatrix")
+  matrix <- as(readMM(file.path(input_dir, "matrix.mtx")), "CsparseMatrix")
   barcodes <- read.csv(file.path(input_dir, "barcodes.csv"), check.names = FALSE)$barcode
   features <- read.csv(file.path(input_dir, "features.csv"), check.names = FALSE)$feature
   metadata <- read.csv(
@@ -48,23 +48,23 @@ make_query_sce <- function(data) {
   )
 }
 
-make_reference_profiles <- function(matrix, labels) {
+MAX_REFERENCE_CELLS_PER_TYPE <- 200L
+
+make_reference_cells <- function(matrix, labels) {
   labels <- as.character(labels)
-  levels <- sort(unique(labels))
-  group_id <- match(labels, levels)
-  membership <- sparseMatrix(
-    i = seq_along(group_id), j = group_id, x = 1,
-    dims = c(length(group_id), length(levels))
-  )
-  normalized <- log_normalize(matrix)
-  group_sizes <- tabulate(group_id, nbins = length(levels))
-  profiles <- normalized %*% membership %*%
-    Diagonal(x = 1 / group_sizes)
-  colnames(profiles) <- levels
+  groups <- split(seq_along(labels), labels)
+  selected <- unlist(lapply(groups, function(indices) {
+    if (length(indices) <= MAX_REFERENCE_CELLS_PER_TYPE) return(indices)
+    indices[sample.int(length(indices), MAX_REFERENCE_CELLS_PER_TYPE)]
+  }), use.names = FALSE)
+  selected <- sort(selected)
+  normalized <- log_normalize(matrix[, selected, drop = FALSE])
 
   SingleCellExperiment(
-    assays = list(logcounts = as(profiles, "dgCMatrix")),
-    colData = DataFrame(celltypes = levels, row.names = levels)
+    assays = list(logcounts = normalized),
+    colData = DataFrame(
+      celltypes = labels[selected], row.names = colnames(normalized)
+    )
   )
 }
 
@@ -74,17 +74,18 @@ if (args$task == "train_reference") {
     stop(sprintf("Label column '%s' not found in training metadata", args$label_col))
   }
   original_cells <- ncol(data$matrix)
-  reference <- make_reference_profiles(
+  reference <- make_reference_cells(
     data$matrix, data$metadata[[args$label_col]]
   )
   saveRDS(reference, file.path(args$save_path, "reference.rds"))
   cat(sprintf(
-    "[CHETAH] aggregated %d reference cells into %d cell-type profiles (%d genes)\n",
+    "[CHETAH] stratified reference sampling: %d -> %d cells (%d genes)\n",
     original_cells, ncol(reference), nrow(reference)
   ))
 } else {
   if (is.null(args$reference_rds)) stop("--reference_rds is required for prediction")
   reference <- readRDS(args$reference_rds)
+
   query_data <- load_exchange(args$input_dir)
   query <- make_query_sce(query_data)
   common_genes <- intersect(rownames(reference), rownames(query))
@@ -108,11 +109,9 @@ if (args$task == "train_reference") {
     last <- if (i < length(starts)) starts[[i + 1L]] - 1L else ncol(query)
     annotated <- CHETAHclassifier(
       input = query[common_genes, first:last, drop = FALSE],
-      ref_profiles = reference[common_genes, ],
-      ref_ct = "celltypes",
+      ref_cells = reference[common_genes, ],
       input_c = "logcounts",
-      ref_c = "logcounts",
-      plot.tree = FALSE
+      ref_c = "logcounts"
     )
     label_parts[[i]] <- as.character(annotated$celltype_CHETAH)
     rm(annotated)

@@ -21,7 +21,7 @@ set.seed(args$seed)
 dir.create(args$save_path, recursive = TRUE, showWarnings = FALSE)
 
 load_exchange <- function(input_dir) {
-  matrix <- as(readMM(file.path(input_dir, "matrix.mtx")), "dgCMatrix")
+  matrix <- as(readMM(file.path(input_dir, "matrix.mtx")), "CsparseMatrix")
   barcodes <- read.csv(file.path(input_dir, "barcodes.csv"), check.names = FALSE)$barcode
   features <- read.csv(file.path(input_dir, "features.csv"), check.names = FALSE)$feature
   metadata <- read.csv(
@@ -65,9 +65,7 @@ if (args$task == "train_reference") {
   reference <- aggregateReference(
     ref = normalized,
     labels = labels,
-    ncenters = 20L,
-    ntop = min(1000L, nrow(normalized)),
-    BPPARAM = BiocParallel::SerialParam()
+    ncenters = 20L
   )
   saveRDS(
     list(reference = reference, label_col = "label"),
@@ -108,12 +106,7 @@ if (args$task == "train_reference") {
     prediction <- SingleR(
       test = query[common_genes, first:last, drop = FALSE],
       ref = reference[common_genes, ],
-      labels = as.character(colData(reference)[[label_col]]),
-      assay.type.test = "logcounts",
-      assay.type.ref = "logcounts",
-      de.method = "classic",
-      num.threads = 1L,
-      BPPARAM = BiocParallel::SerialParam()
+      labels = as.character(colData(reference)[[label_col]])
     )
 
     chunk_labels <- as.character(prediction$pruned.labels)

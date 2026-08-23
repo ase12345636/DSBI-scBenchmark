@@ -37,10 +37,6 @@ def _training_options(reference, seed):
         "with_mean": False,
         "use_SGD": True,
         "mini_batch": True,
-        "batch_number": 100,
-        "batch_size": 1000,
-        "epochs": 10,
-        "n_jobs": 1,
         "random_state": seed,
     }
 
@@ -52,7 +48,6 @@ def train_celltypist(adata, seed, run_out_path, args):
     model = celltypist.train(
         X=reference,
         labels=args.train_celltype,
-        check_expression=True,
         **_training_options(reference, seed),
     )
     if args.save_models:
@@ -96,6 +91,7 @@ def predict_celltypist(adata, model, pred_key, seed, run_out_path, args):
     adata.obs[pred_key] = (
         predicted["predicted_labels"]
         .reindex(adata.obs_names.astype(str))
+        .astype("string")
         .fillna("Unknown")
         .astype(str)
         .values
