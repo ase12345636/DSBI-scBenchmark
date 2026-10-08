@@ -2,18 +2,79 @@
 
 from __future__ import annotations
 
+from anndata import AnnData
+from anndata.io import read_elem
+import h5py
 import numpy as np
 import scanpy as sc
 from scipy import sparse
 
 
-def load_dataset(path):
-    """Load an AnnData dataset and make cell/gene identifiers unique."""
+def load_dataset(path, *, obs_columns=None, keep_layers=()):
+    """Read only the H5AD elements needed by an annotation method.
+
+    ``X`` and every cell/gene are retained without sampling.  Optional
+    observation columns and matrix layers (Seurat uses ``counts``) are selected
+    while the HDF5 store is open. ``raw``, embeddings, graphs, unstructured
+    annotations and unrelated layers are never materialized.
+    """
     print(f"Loading data from {path}")
-    adata = sc.read_h5ad(path)
+    requested_obs = None
+    if obs_columns is not None:
+        requested_obs = list(dict.fromkeys(
+            str(column) for column in obs_columns if column is not None
+        ))
+    requested_layers = list(dict.fromkeys(
+        str(layer) for layer in keep_layers
+    ))
+
+    with h5py.File(path, "r") as store:
+        if "X" not in store:
+            raise ValueError(f"Dataset has no expression matrix X: {path}")
+
+        obs = read_elem(store["obs"])
+        if requested_obs is not None:
+            missing = [column for column in requested_obs if column not in obs]
+            if missing:
+                raise KeyError(
+                    "Requested observation columns are missing from "
+                    f"{path}: {', '.join(missing)}"
+                )
+            obs = obs.loc[:, requested_obs].copy()
+
+        var = read_elem(store["var"])
+        var = var.iloc[:, 0:0].copy()
+        layer_group = store.get("layers")
+        available_layers = [] if layer_group is None else list(layer_group.keys())
+        selected_layers = [
+            layer for layer in requested_layers if layer in available_layers
+        ]
+        adata = AnnData(
+            X=read_elem(store["X"]),
+            obs=obs,
+            var=var,
+            layers={
+                layer: read_elem(layer_group[layer])
+                for layer in selected_layers
+            },
+        )
+
     adata.obs_names_make_unique()
     adata.var_names_make_unique()
     return adata
+
+
+def model_input_with_shared_expression(adata, obs_columns):
+    """Isolate per-run metadata while sharing immutable expression matrices."""
+    columns = list(dict.fromkeys(
+        str(column) for column in obs_columns if column is not None
+    ))
+    return AnnData(
+        X=adata.X,
+        obs=adata.obs.loc[:, columns].copy(),
+        var=adata.var.copy(),
+        layers={name: matrix for name, matrix in adata.layers.items()},
+    )
 
 
 def is_count_matrix(matrix, sample_size=10000, tolerance=1e-6):

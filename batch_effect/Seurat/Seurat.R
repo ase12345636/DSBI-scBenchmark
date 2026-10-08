@@ -1,5 +1,5 @@
 #!/usr/bin/env Rscript
-# Seurat v5 RPCA batch correction
+# Seurat v5 default CCA batch correction
 # Called by Seurat.py — reads mtx + csv (native R), integrates, exports embedding CSV.
 # No reticulate / Python dependency required.
 
@@ -54,12 +54,12 @@ cat(sprintf("Dataset: %d cells, %d genes\n", ncol(counts), nrow(counts)))
 
 timer_start <- proc.time()
 
-# `counts` here are raw integer counts (Python side uses preprocess_filter_only).
+# The Python wrapper places the source count matrix in X without applying a
+# benchmark-wide preprocessing pipeline. Seurat performs its own preprocessing.
 seurat_obj <- CreateSeuratObject(counts = counts, meta.data = metadata)
 
 # ============================================================
-# 5. Per-batch NormalizeData / HVG / Scale / PCA, then RPCA integration
-#    (standard Seurat v5 RPCA workflow)
+# 5. Per-batch NormalizeData / HVG, then default CCA integration
 # ============================================================
 
 seurat_list <- SplitObject(seurat_obj, split.by = args$batch_key)
@@ -75,22 +75,15 @@ integration_features <- SelectIntegrationFeatures(
   object.list = seurat_list, nfeatures = 2000, verbose = FALSE
 )
 
-seurat_list <- lapply(seurat_list, function(x) {
-  x <- ScaleData(x, features = integration_features, verbose = FALSE)
-  x <- RunPCA(x, features = integration_features, npcs = 50,
-              verbose = FALSE, seed.use = args$seed)
-  return(x)
-})
-
 anchors <- FindIntegrationAnchors(
   seurat_list, anchor.features = integration_features,
-  reduction = "rpca", dims = 1:50, verbose = FALSE
+  dims = 1:30, verbose = FALSE
 )
-seurat_integrated <- IntegrateData(anchors, dims = 1:50, verbose = FALSE)
+seurat_integrated <- IntegrateData(anchors, dims = 1:30, verbose = FALSE)
 
 DefaultAssay(seurat_integrated) <- "integrated"
 seurat_integrated <- ScaleData(seurat_integrated, verbose = FALSE)
-seurat_integrated <- RunPCA(seurat_integrated, npcs = 50,
+seurat_integrated <- RunPCA(seurat_integrated, npcs = 30,
                             verbose = FALSE, seed.use = args$seed)
 
 timer_end <- proc.time()

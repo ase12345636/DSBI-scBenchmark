@@ -1,6 +1,6 @@
 """
-Label Utilities for scLightGAT
-==============================
+Label Utilities for Cell-type Annotation
+========================================
 This module provides utilities for cell type label standardization and 
 accuracy calculation with custom rules for myeloid grouping and fine-grained tolerance.
 """
@@ -146,7 +146,7 @@ ALLOWED_CELLTYPES = {
 # Fine-grained to Broad Type Mapping (Rule 1.3)
 # ============================================================================
 
-# If scLightGAT predicts a fine-grained type but ground truth is broad,
+# If a model predicts a fine-grained type but ground truth is broad,
 # it should still count as correct
 FINE_TO_BROAD = {
     # CD4+ T cell subtypes
@@ -648,7 +648,7 @@ VIBRANT_PALETTE = [
 def get_aligned_color_palette(gt_labels: pd.Series, pred_labels: pd.Series,
                               base_palette: Optional[List[str]] = None) -> Tuple[Dict, Dict]:
     """
-    Generate color palettes for Ground Truth and scLightGAT prediction
+    Generate color palettes for ground truth and prediction
     such that shared cell types have the same color.
     Uses vibrant contrast colors for better visualization.
     
@@ -679,4 +679,3 @@ def get_aligned_color_palette(gt_labels: pd.Series, pred_labels: pd.Series,
     pred_palette = {cat: color_map[cat] for cat in sorted(pred_categories)}
     
     return gt_palette, pred_palette
-

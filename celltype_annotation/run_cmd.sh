@@ -1,79 +1,49 @@
-bash run_script.sh \
-    --train_path /Group16T/common/ccuc/scLightGAT/scLightGAT/scLightGAT_data/Integrated_training/train.h5ad \
-    --test_path /Group16T/common/ccuc/scLightGAT/scLightGAT/scLightGAT_data/Independent_testing/GSE115978.h5ad \
-    --save_path /Group16T/common/ccuc/scBenchmark/celltype_annotation/result/GSE115978/ \
-    --train_celltype Celltype_training \
-    --test_celltype Celltype_training \
-    --train_batch Data_source \
-    --test_batch samples \
-    --n_runs 5
+#!/usr/bin/env bash
+set -u -o pipefail
 
-bash run_script.sh \
-    --train_path /Group16T/common/ccuc/scLightGAT/scLightGAT/scLightGAT_data/Integrated_training/train.h5ad \
-    --test_path /Group16T/common/ccuc/scLightGAT/scLightGAT/scLightGAT_data/Independent_testing/GSE123139.h5ad \
-    --save_path /Group16T/common/ccuc/scBenchmark/celltype_annotation/result/GSE123139/ \
-    --train_celltype Celltype_training \
-    --test_celltype Celltype_training \
-    --train_batch Data_source \
-    --test_batch Sample.Short.Name \
-    --n_runs 5
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+overall_status=0
 
-bash run_script.sh \
-    --train_path /Group16T/common/ccuc/scLightGAT/scLightGAT/scLightGAT_data/Integrated_training/train.h5ad \
-    --test_path /Group16T/common/ccuc/scLightGAT/scLightGAT/scLightGAT_data/Independent_testing/GSE153935.h5ad \
-    --save_path /Group16T/common/ccuc/scBenchmark/celltype_annotation/result/GSE153935/ \
-    --train_celltype Celltype_training \
-    --test_celltype Celltype_training \
-    --train_batch Data_source \
-    --test_batch orig.ident \
-    --n_runs 5
-
-bash run_script.sh \
-    --train_path /Group16T/common/ccuc/scLightGAT/scLightGAT/scLightGAT_data/Integrated_training/train.h5ad \
-    --test_path /Group16T/common/ccuc/scLightGAT/scLightGAT/scLightGAT_data/Independent_testing/GSE166555.h5ad \
-    --save_path /Group16T/common/ccuc/scBenchmark/celltype_annotation/result/GSE166555/ \
-    --train_celltype Celltype_training \
-    --test_celltype Celltype_training \
-    --train_batch Data_source \
-    --test_batch sample_id \
-    --n_runs 5
-
-bash run_script.sh \
-    --train_path /Group16T/common/ccuc/scLightGAT/scLightGAT/scLightGAT_data/Integrated_training/train.h5ad \
-    --test_path /Group16T/common/ccuc/scLightGAT/scLightGAT/scLightGAT_data/Independent_testing/Zhengsorted.h5ad \
-    --save_path /Group16T/common/ccuc/scBenchmark/celltype_annotation/result/Zhengsorted/ \
+bash "$script_dir/run_script.sh" \
+    --train_path /Group16T/common/ccuc/scLightGAT/preprocessing/scLightGAT_data/Integrated_training/train.h5ad \
+    --test_path /Group16T/common/ccuc/scLightGAT/preprocessing/scLightGAT_data/Independent_testing/ \
+    --save_path "/Group16T/common/ccuc/scLightGAT/scLightGAT/result" \
     --train_celltype Celltype_training \
     --test_celltype Celltype_training \
     --train_batch Data_source \
     --test_batch None \
-    --n_runs 5
+    --test_batch_map "GSE115978=samples,GSE123139=Sample.Short.Name,GSE153935=orig.ident,GSE166555=sample_id,Zhengsorted=None,lung_full=None,sapiens_full=donor" \
+    --n_jobs 12 \
+    --n_runs 5 || overall_status=1
 
-bash run_script.sh \
-    --train_path /Group16T/common/ccuc/scLightGAT/scLightGAT/scLightGAT_data/Integrated_training/train.h5ad \
-    --test_path /Group16T/common/ccuc/scLightGAT/scLightGAT/scLightGAT_data/Independent_testing/lung_full.h5ad \
-    --save_path /Group16T/common/ccuc/scBenchmark/celltype_annotation/result/lung_full/ \
-    --train_celltype Celltype_training \
-    --test_celltype Celltype_training \
-    --train_batch Data_source \
-    --test_batch None \
-    --n_runs 5
-
-bash run_script.sh \
-    --train_path /Group16T/common/ccuc/scLightGAT/scLightGAT/scLightGAT_data/Integrated_training/train.h5ad \
-    --test_path /Group16T/common/ccuc/scLightGAT/scLightGAT/scLightGAT_data/Independent_testing/sapiens_full.h5ad \
-    --save_path /Group16T/common/ccuc/scBenchmark/celltype_annotation/result/sapiens_full/ \
-    --train_celltype Celltype_training \
-    --test_celltype Celltype_training \
-    --train_batch Data_source \
-    --test_batch donor \
-    --n_runs 5
-
-bash run_script.sh \
-    --train_path /Group16T/common/ccuc/scLightGAT/scLightGAT/scLightGAT_data/caf.data/caf_train.h5ad \
-    --test_path /Group16T/common/ccuc/scLightGAT/scLightGAT/scLightGAT_data/caf.data/caf_test.h5ad \
-    --save_path /Group16T/common/ccuc/scBenchmark/celltype_annotation/result/CAF/ \
+bash "$script_dir/run_script.sh" \
+    --train_path /Group16T/common/ccuc/scLightGAT/preprocessing/scLightGAT_data/caf.data/caf_train.h5ad \
+    --test_path /Group16T/common/ccuc/scLightGAT/preprocessing/scLightGAT_data/caf.data/caf_test.h5ad \
+    --save_path "/Group16T/common/ccuc/scLightGAT/scLightGAT/result/CAF" \
     --train_celltype Celltype_training \
     --test_celltype Celltype_training \
     --train_batch SampleID \
     --test_batch None \
-    --n_runs 5
+    --n_jobs 12 \
+    --n_runs 5 || overall_status=1
+
+subtype_data=/Group16T/common/ccuc/scLightGAT/preprocessing/scLightGAT_data/Subtype
+subtype_result="/Group16T/common/ccuc/scLightGAT/scLightGAT/result/Subtype"
+
+for broad in B_cell CD4_T_cell CD8_T_cell DC Plasma_cell; do
+    bash "$script_dir/run_script.sh" \
+        --train_path "$subtype_data/${broad}_train.h5ad" \
+        --test_path "$subtype_data/${broad}_test.h5ad" \
+        --save_path "$subtype_result/$broad/" \
+        --train_celltype Celltype_subtraining \
+        --test_celltype Celltype_subtraining \
+        --train_batch Data_source \
+        --test_batch Data_source \
+        --n_jobs 12 \
+        --n_runs 5 || overall_status=1
+done
+
+if ((overall_status != 0)); then
+    echo "One or more benchmark groups failed; inspect the logs above." >&2
+    exit 1
+fi

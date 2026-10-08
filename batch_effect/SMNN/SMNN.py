@@ -1,346 +1,132 @@
 import os
 import sys
-
+import subprocess
 import numpy as np
-import scanpy as sc
-from scipy.sparse import issparse
-from scipy.spatial import cKDTree
-
-try:
-    from mnnpy.utils import (
-        adjust_shift_variance,
-        compute_correction,
-        transform_input_data,
-    )
-except ImportError as exc:
-    raise ImportError(
-        "SMNN requires mnnpy. Install it in the active environment with "
-        "`pip install mnnpy`."
-    ) from exc
+import pandas as pd
+import scipy.sparse as sp
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.pipeline import create_argument_parser, run_integration_pipeline
+from utils.pipeline import (create_argument_parser, run_integration_pipeline,
+                            export_adata_for_r, import_embedding_from_r)
+
+R_SCRIPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "SMNN.R")
+R_EXCHANGE_DIR_NAME = "r_exchange"
 
 
-def _ordered_unique(values):
-    """Return unique values in first-observation order."""
-    return list(dict.fromkeys(values))
-
-
-def _resolve_batch_order(batch_labels, reference_batch=None):
-    """Choose a deterministic correction order, optionally moving a reference first."""
-    batch_order = _ordered_unique(batch_labels.tolist())
-    if len(batch_order) < 2:
-        raise ValueError("SMNN requires at least two batches")
-
-    if reference_batch is None:
-        return batch_order
-
-    matches = [batch for batch in batch_order if str(batch) == reference_batch]
-    if not matches:
-        available = ", ".join(map(str, batch_order))
-        raise ValueError(
-            f"SMNN reference batch '{reference_batch}' was not found. "
-            f"Available batches: {available}"
-        )
-
-    reference = matches[0]
-    return [reference] + [batch for batch in batch_order if batch != reference]
-
-
-def _query_neighbors(reference, query, k, n_jobs):
-    """Query a KD-tree and always return a two-dimensional index array."""
-    indices = cKDTree(reference).query(query, k=k, workers=n_jobs)[1]
-    return np.asarray(indices, dtype=np.int64).reshape(query.shape[0], k)
-
-
-def _find_mutual_nn(data1, data2, k, n_jobs):
-    """Find MNN pairs while safely handling cell types smaller than ``k``."""
-    if data1.shape[0] == 0 or data2.shape[0] == 0:
-        return np.empty(0, dtype=np.int32), np.empty(0, dtype=np.int32)
-
-    k1 = min(k, data1.shape[0])
-    k2 = min(k, data2.shape[0])
-    neighbors_1 = _query_neighbors(data1, data2, k1, n_jobs)
-    neighbors_2 = _query_neighbors(data2, data1, k2, n_jobs)
-
-    mutual_1 = []
-    mutual_2 = []
-    for index_2, candidates_1 in enumerate(neighbors_1):
-        for index_1 in candidates_1:
-            if np.any(neighbors_2[index_1] == index_2):
-                mutual_1.append(index_1)
-                mutual_2.append(index_2)
-
-    return (
-        np.asarray(mutual_1, dtype=np.int32),
-        np.asarray(mutual_2, dtype=np.int32),
-    )
-
-
-def _find_supervised_pairs(ref_data, new_data, ref_labels, new_labels, k, n_jobs):
-    """Find MNNs separately inside every cell type shared by two batches."""
-    shared_labels = [
-        label
-        for label in _ordered_unique(ref_labels.tolist())
-        if np.any(new_labels == label)
-    ]
-    if not shared_labels:
-        raise ValueError(
-            "SMNN found no shared cell-type labels between the reference and "
-            "current batch"
-        )
-
-    all_ref_pairs = []
-    all_new_pairs = []
-    for label in shared_labels:
-        ref_indices = np.flatnonzero(ref_labels == label)
-        new_indices = np.flatnonzero(new_labels == label)
-        local_ref, local_new = _find_mutual_nn(
-            np.ascontiguousarray(ref_data[ref_indices], dtype=np.float32),
-            np.ascontiguousarray(new_data[new_indices], dtype=np.float32),
-            k=k,
-            n_jobs=n_jobs,
-        )
-        if local_ref.size == 0:
-            continue
-
-        all_ref_pairs.append(ref_indices[local_ref])
-        all_new_pairs.append(new_indices[local_new])
-        print(
-            f"  Cell type {label!r}: {ref_indices.size} reference cells, "
-            f"{new_indices.size} current cells, {local_ref.size} MNN pairs"
-        )
-
-    if not all_ref_pairs:
-        raise RuntimeError("SMNN did not find any mutual nearest-neighbor pairs")
-
-    return (
-        np.ascontiguousarray(np.concatenate(all_ref_pairs), dtype=np.int32),
-        np.ascontiguousarray(np.concatenate(all_new_pairs), dtype=np.int32),
-        shared_labels,
-    )
-
-
-def _as_batch_matrices(adata, batch_labels, batch_order):
-    """Split X by batch without changing the original observation order."""
-    batch_indices = [np.flatnonzero(batch_labels == batch) for batch in batch_order]
-    matrices = []
-    for indices in batch_indices:
-        matrix = adata.X[indices]
-        if issparse(matrix):
-            matrix = matrix.tocsr()
-        matrices.append(matrix)
-    return matrices, batch_indices
-
-
-def supervised_mnn_correct(
-    matrices,
-    label_vectors,
-    var_names,
-    k=20,
-    sigma=1.0,
-    var_adj=True,
-    n_jobs=1,
-):
-    """Apply the SMNN 1.2.1 correction procedure to cell-by-gene matrices.
-
-    This follows the reference implementation's defaults: cosine normalization
-    on input and output, MNN detection restricted to matched cell types, a
-    Gaussian-smoothed correction vector, and optional variance adjustment.
-    Unlike the upstream R loop, reference labels are expanded after every batch,
-    so supervised matching remains valid for more than two batches.
-    """
-    if len(matrices) < 2:
-        raise ValueError("SMNN requires at least two batch matrices")
-    if len(matrices) != len(label_vectors):
-        raise ValueError("Each SMNN batch matrix must have one label vector")
-    n_features = matrices[0].shape[1]
-    if n_features < 3:
-        raise ValueError(
-            "SMNN needs at least three retained features; check the preprocessing "
-            "and highly-variable-gene filters"
-        )
-    for batch_id, (matrix, labels) in enumerate(zip(matrices, label_vectors)):
-        if matrix.shape[1] != n_features:
-            raise ValueError("All SMNN batch matrices must contain the same features")
-        if matrix.shape[0] != len(labels):
+def _validate_source_counts(matrix):
+    """Reject processed X before using it as SMNN's raw expression input."""
+    values = matrix.data if sp.issparse(matrix) else np.asarray(matrix).reshape(-1)
+    chunk_size = 1_000_000
+    for start in range(0, values.size, chunk_size):
+        chunk = values[start:start + chunk_size]
+        if (
+            not np.all(np.isfinite(chunk))
+            or np.any(chunk < 0)
+            or not np.all(
+                np.isclose(chunk, np.rint(chunk), rtol=0.0, atol=1e-6)
+            )
+        ):
             raise ValueError(
-                f"SMNN batch {batch_id} has {matrix.shape[0]} cells but "
-                f"{len(labels)} cell-type labels"
-            )
-    if k < 1:
-        raise ValueError("SMNN k must be at least 1")
-    if sigma <= 0:
-        raise ValueError("SMNN sigma must be greater than 0")
-
-    print("Performing SMNN cosine normalization...")
-    in_batches, out_batches, _, same_set = transform_input_data(
-        matrices,
-        cos_norm_in=True,
-        cos_norm_out=True,
-        var_index=list(map(str, var_names)),
-        var_subset=None,
-        n_jobs=n_jobs,
-    )
-    if not same_set:
-        raise RuntimeError("Unexpected SMNN input/output feature mismatch")
-
-    corrected_batches = [None] * len(matrices)
-    corrected_batches[0] = np.ascontiguousarray(out_batches[0], dtype=np.float32)
-    ref_data = np.ascontiguousarray(in_batches[0], dtype=np.float32)
-    ref_labels = np.asarray(label_vectors[0], dtype=str)
-    run_stats = []
-
-    for target in range(1, len(matrices)):
-        print(f"SMNN correction step {target}/{len(matrices) - 1}")
-        new_data = np.ascontiguousarray(in_batches[target], dtype=np.float32)
-        new_labels = np.asarray(label_vectors[target], dtype=str)
-        mnn_ref, mnn_new, shared_labels = _find_supervised_pairs(
-            ref_data,
-            new_data,
-            ref_labels,
-            new_labels,
-            k=k,
-            n_jobs=n_jobs,
-        )
-
-        print(f"  Computing correction vectors from {mnn_ref.size} MNN pairs...")
-        correction = compute_correction(
-            ref_data,
-            new_data,
-            mnn_ref,
-            mnn_new,
-            new_data,
-            float(sigma),
-        )
-        correction = np.ascontiguousarray(correction, dtype=np.float32)
-
-        if var_adj:
-            print("  Adjusting correction-vector variance...")
-            correction = adjust_shift_variance(
-                ref_data,
-                new_data,
-                correction,
-                float(sigma),
-                n_jobs,
+                'SMNN requires raw source expression in layers["counts"] or '
+                "integer-valued X."
             )
 
-        new_data = np.ascontiguousarray(new_data + correction, dtype=np.float32)
-        corrected_batches[target] = new_data
-        ref_data = np.ascontiguousarray(
-            np.concatenate((ref_data, new_data), axis=0), dtype=np.float32
-        )
-        ref_labels = np.concatenate((ref_labels, new_labels))
-        run_stats.append(
-            {
-                "target_index": target,
-                "n_mnn_pairs": int(mnn_ref.size),
-                "shared_celltypes": [str(label) for label in shared_labels],
-            }
-        )
 
-    return corrected_batches, run_stats
+def prepare_smnn_input(adata, label_col, batch_col):
+    """Put full-gene source expression in X for SMNN's own workflow.
+
+    Official SMNN accepts an unprocessed expression matrix.  Normalization for
+    downstream feature selection and PCA remains local to ``SMNN.R``; no shared
+    benchmark QC, normalization, or HVG filter is applied here.
+    """
+    del label_col, batch_col
+    adata_smnn = adata.copy()
+    if "counts" in adata_smnn.layers:
+        adata_smnn.X = adata_smnn.layers["counts"].copy()
+    else:
+        _validate_source_counts(adata_smnn.X)
+        adata_smnn.layers["counts"] = adata_smnn.X.copy()
+
+    print(f"SMNN full-gene source-expression shape: {adata_smnn.shape}")
+    return adata_smnn
 
 
 def integrate_smnn(adata, seed, run_out_path, args):
-    """Run supervised MNN correction and expose a PCA embedding for evaluation."""
-    required_columns = [args.batch_key, args.celltype_key]
-    missing_columns = [key for key in required_columns if key not in adata.obs]
-    if missing_columns:
-        raise KeyError(f"Missing AnnData obs columns: {missing_columns}")
-    if adata.obs[required_columns].isna().any().any():
-        raise ValueError("SMNN batch and cell-type labels cannot contain missing values")
+    """Run SMNN 1.2.1 batch correction via an R subprocess.
 
-    batch_labels = adata.obs[args.batch_key].to_numpy()
-    batch_order = _resolve_batch_order(batch_labels, args.smnn_reference_batch)
-    matrices, batch_indices = _as_batch_matrices(adata, batch_labels, batch_order)
-    label_vectors = [
-        adata.obs.iloc[indices][args.celltype_key].astype(str).to_numpy()
-        for indices in batch_indices
-    ]
+    1. Export adata as mtx + csv once (shared across runs, skipped if exists)
+    2. Call SMNN.R (supervised SMNN; seed changes each run for final PCA)
+    3. Read back the 50-dimensional PCA embedding
+    """
+    adata.obs_names_make_unique()
 
-    available_cpus = os.cpu_count() or 1
-    n_jobs = available_cpus if args.smnn_n_jobs < 1 else args.smnn_n_jobs
-    n_jobs = max(1, min(n_jobs, available_cpus))
+    celltype_key = getattr(args, "celltype_key", None)
+    if not celltype_key:
+        raise ValueError(
+            "SMNN is supervised. Please provide --celltype_key with the cell-type "
+            "annotation column used by SMNN."
+        )
 
-    print(f"SMNN batch order: {[str(batch) for batch in batch_order]}")
-    print(
-        f"SMNN supervision key: {args.celltype_key}; k={args.smnn_k}; "
-        f"sigma={args.smnn_sigma}; var_adj={not args.smnn_no_var_adj}; "
-        f"n_jobs={n_jobs}"
+    # Shared exchange dir at tool level — export once, but rebuild it if a
+    # previous process stopped partway through the export.
+    r_exchange_dir = os.path.join(args.save_path, "SMNN", R_EXCHANGE_DIR_NAME)
+    exchange_inputs = (
+        "matrix.mtx",
+        "barcodes.csv",
+        "features.csv",
+        "metadata.csv",
     )
-    corrected_batches, run_stats = supervised_mnn_correct(
-        matrices,
-        label_vectors,
-        adata.var_names,
-        k=args.smnn_k,
-        sigma=args.smnn_sigma,
-        var_adj=not args.smnn_no_var_adj,
-        n_jobs=n_jobs,
+    if not all(
+        os.path.isfile(os.path.join(r_exchange_dir, name))
+        and os.path.getsize(os.path.join(r_exchange_dir, name)) > 0
+        for name in exchange_inputs
+    ):
+        export_adata_for_r(adata, r_exchange_dir)
+
+    # Force reticulate to use this exact Python environment, where mnnpy is installed.
+    r_env = os.environ.copy()
+    r_env["RETICULATE_PYTHON"] = sys.executable
+
+    # Call R script (SMNN itself is deterministic; seed controls the final PCA)
+    subprocess.run([
+        "Rscript", R_SCRIPT_PATH,
+        "--input_dir", r_exchange_dir,
+        "--batch_key", args.batch_key,
+        "--celltype_key", celltype_key,
+        "--seed", str(seed),
+    ], check=True, env=r_env)
+
+    # Read back integrated embedding
+    import_embedding_from_r(
+        adata,
+        os.path.join(r_exchange_dir, "embedding.csv"),
+        "X_smnn",
     )
 
-    corrected = np.empty(adata.shape, dtype=np.float32)
-    for indices, matrix in zip(batch_indices, corrected_batches):
-        corrected[indices] = matrix
+    # Read algorithm-only runtime from R (excludes file I/O)
+    timing_path = os.path.join(r_exchange_dir, "timing.csv")
+    algo_runtime = pd.read_csv(timing_path)["runtime_seconds"].iloc[0]
 
-    n_comps = min(50, corrected.shape[0] - 1, corrected.shape[1] - 1)
-    if n_comps < 2:
-        raise ValueError("SMNN needs at least three cells and three retained features")
-    adata.obsm["X_smnn"] = sc.pp.pca(
-        corrected,
-        n_comps=n_comps,
-        random_state=seed,
-        zero_center=True,
-    )
-    adata.uns["smnn"] = {
-        "supervised": True,
-        "supervision_key": args.celltype_key,
-        "batch_order": [str(batch) for batch in batch_order],
-        "k": args.smnn_k,
-        "sigma": args.smnn_sigma,
-        "variance_adjustment": not args.smnn_no_var_adj,
-        "n_jobs": n_jobs,
-        "steps": run_stats,
-    }
-    return adata
+    return adata, algo_runtime
 
 
 if __name__ == "__main__":
     parser = create_argument_parser("SMNN")
-    parser.add_argument(
-        "--smnn_k",
-        type=int,
-        default=20,
-        help="Number of nearest neighbors used by SMNN (official default: 20)",
-    )
-    parser.add_argument(
-        "--smnn_sigma",
-        type=float,
-        default=1.0,
-        help="Gaussian smoothing bandwidth (official default: 1)",
-    )
-    parser.add_argument(
-        "--smnn_n_jobs",
-        type=int,
-        default=-1,
-        help="Parallel workers; values below 1 use all available CPUs",
-    )
-    parser.add_argument(
-        "--smnn_reference_batch",
-        type=str,
-        default=None,
-        help="Reference batch value; default is the first observed batch",
-    )
-    parser.add_argument(
-        "--smnn_no_var_adj",
-        action="store_true",
-        help="Disable the official variance-adjustment step",
-    )
+
+    # Add only when the shared parser does not already define it.
+    if not any(action.dest == "celltype_key" for action in parser._actions):
+        parser.add_argument(
+            "--celltype_key",
+            type=str,
+            required=True,
+            help="Cell-type annotation column used by supervised SMNN",
+        )
+
     args = parser.parse_args()
+    r_exchange_dir = os.path.join(args.save_path, "SMNN", R_EXCHANGE_DIR_NAME)
     run_integration_pipeline(
-        "SMNN",
-        integrate_smnn,
-        "X_smnn",
-        args,
+        "SMNN", integrate_smnn, "X_smnn", args,
+        r_exchange_dir=r_exchange_dir,
+        preprocess_fn=prepare_smnn_input,
+        run_pca=False,
     )

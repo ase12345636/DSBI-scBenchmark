@@ -5,19 +5,28 @@ as `batch_effect`: every tool has a small wrapper, while data loading,
 repeated runs, metrics, UMAP and result writing are handled by shared modules.
 
 The benchmark includes CellTypist, CHETAH, Seurat label transfer, SingleR and
-scGPT. Each tool uses an independent Conda environment to avoid Python/R and
-package-version conflicts.
+scGPT. Each tool uses an independent Conda environment to avoid
+Python/R and package-version conflicts.
 
 ## Common input
 
-Both inputs are AnnData (`.h5ad`) files. The four metadata arguments are
+`--train_path` is always one AnnData (`.h5ad`) reference file. In standard
+mode, `--test_path` may be one query file or a directory; every directly
+contained `.h5ad` file is then predicted from the same model for that run and
+seed. Metadata arguments are
 independent because reference and query datasets may use different column
 names:
 
 - `--train_celltype`: reference labels used to train the classifier.
 - `--test_celltype`: query ground truth used only for evaluation.
-- `--train_batch`: reference batch column; currently recorded/validated only.
+- `--train_batch`: reference batch column, available to methods with native
+  batch-aware processing.
 - `--test_batch`: query batch column used in saved coordinates and batch UMAP.
+- `--test_batch_map`: optional `DATASET=COLUMN,...` overrides for a standard
+  query directory whose files use different batch-column names.
+- `--n_jobs`: common CPU allowance for every method (default `12`). Native
+  worker interfaces receive this value; BLAS/OpenMP libraries are capped at
+  the same value for methods without such an interface.
 
 Pass the literal value `None` when a column does not exist. With
 `--test_celltype None`, prediction and UMAP outputs are still generated but
@@ -33,6 +42,22 @@ Every method environment needs the common Python evaluation/plotting stack:
 pip install "numpy<2" pandas scipy scikit-learn \
   anndata scanpy matplotlib seaborn umap-learn
 ```
+
+### Verified tool versions
+
+The current benchmark implementation was reviewed against these installed
+versions. This records the verified environment only; it does not install,
+upgrade or lock packages:
+
+| Package | Verified version |
+| --- | --- |
+| CellTypist | 1.7.1 |
+| scikit-learn | 1.7.2 |
+| Seurat | 5.3.0 |
+| SeuratObject | 5.2.0 |
+| CHETAH | 1.18.0 |
+| SingleR | 2.8.0 |
+| scGPT | 0.2.4 |
 
 ## CellTypist
 
@@ -109,21 +134,50 @@ pip install "numpy<2" pandas scipy scikit-learn \
 
 ## scGPT
 
-The versions below keep PyTorch and torchtext matched. Flash Attention is
-optional and deliberately omitted to avoid CUDA/build conflicts.
+On GB10, keep the platform/vendor CUDA 13 AArch64 PyTorch build that supports
+the GPU's `sm_121` architecture. Do not replace it with the older CUDA 12.1
+(`cu121`) wheels. Follow the current NVIDIA GB10 image guidance or PyTorch
+platform guidance for the base Torch installation; an exact nightly wheel is
+intentionally not pinned here because those builds expire and change.
+
+torchtext ABI compatibility is not a prerequisite for this benchmark. The
+preserved scGPT code installs a narrow pure-Python `Vocab` compatibility shim
+when torchtext's compiled extension cannot load with the platform Torch build.
+Flash Attention is deliberately omitted because available external packages do
+not implement the legacy API expected by scGPT 0.2.4 on this stack.
+
+Do not add a bare `pip install flash_attn`. The reported
+`ModuleNotFoundError: No module named 'torch'` comes from pip build isolation;
+`--no-build-isolation` only lets the build see the existing Torch and does not
+solve the remaining API, CUDA, or GPU-architecture compatibility.
+
+scGPT 0.2.4 imports the legacy `flash_attn.flash_attention.FlashMHA` API,
+whereas current FlashAttention and the CUDA 13/Blackwell implementation expose
+newer APIs. The model is constructed with the tutorial settings
+`use_fast_transformer=True` and `fast_transformer_backend="flash"`. When the
+legacy `FlashMHA` API is unavailable, scGPT 0.2.4 applies its official fallback
+to the standard PyTorch encoder, which can still dispatch to native
+scaled-dot-product attention kernels when Torch, CUDA and the GPU support them.
+Both the requested and effective backends, encoder classes and native SDPA
+flags are recorded in the scGPT model identity. No separate FlashAttention
+package is required.
 
 ```bash
 conda create -n scGPT -c conda-forge python=3.10 pip -y
 conda activate scGPT
-python -m pip install torch==2.1.2 torchvision==0.16.2 \
-  torchaudio==2.1.2 torchtext==0.16.2 \
-  --index-url https://download.pytorch.org/whl/cu121
+# Install or retain the GB10 vendor-supported CUDA 13 AArch64 PyTorch build.
 python -m pip install "numpy<2" pandas scipy scikit-learn \
   anndata scanpy matplotlib seaborn umap-learn \
   scgpt==0.2.4 gdown ipython
-python -m pip check
-python -c 'import numpy, torch, scgpt; assert int(numpy.__version__.split(".")[0]) < 2'
+python -c 'import torch; print(torch.__version__, torch.version.cuda, torch.cuda.get_arch_list()); assert torch.cuda.is_available(); assert str(torch.version.cuda).startswith("13."); assert "sm_121" in torch.cuda.get_arch_list()'
+PYTHONPATH=. python -c 'import sys; sys.path.insert(0, "scGPT"); import model_impl; print("scGPT compatibility imports OK")'
 ```
+
+Checkpoint loading follows the resolved backend: Flash retains `Wqkv.*`, while
+the standard PyTorch fallback applies scGPT's official `Wqkv.*` to `in_proj_*`
+remap. A strict audit verifies all 24 QKV tensors from the 12-layer whole-human
+checkpoint by exact tensor equality; unknown or non-classifier shape mismatches
+abort the run instead of silently leaving encoder weights uninitialized.
 
 This benchmark uses the official `whole-human` checkpoint recommended by the
 scGPT project. Download it once with:
@@ -143,11 +197,16 @@ scGPT/models/scGPT_human/
 └── vocab.json
 ```
 
-`run_script.sh` performs the same check and downloads the checkpoint
-automatically when these files are absent. A different checkpoint can be
-passed with `--scgpt_model_dir`.
+`run_script.sh` runs scGPT as part of the standard benchmark and performs the
+same check. It reports a failed method instead of downloading during a formal
+run when these files are absent. A different checkpoint can be passed with
+`--scgpt_model_dir`.
 
 ## Run all methods
+
+Activate or initialize Conda before launching. On a machine where Conda is not
+already available to non-interactive shells, point the launcher at its
+initialization script with `SCBENCHMARK_CONDA_SH=/path/to/conda.sh`.
 
 ```bash
 bash run_script.sh \
@@ -158,9 +217,59 @@ bash run_script.sh \
     --test_celltype query_ground_truth \
     --train_batch reference_batch \
     --test_batch query_batch \
-    --n_runs 5 \
-    --base_seed 42
+    --n_jobs 12 \
+    --n_runs 5
 ```
+
+For a query directory whose files use different batch-column names:
+
+```bash
+bash run_script.sh \
+    --train_path reference.h5ad \
+    --test_path independent_tests/ \
+    --save_path results/ \
+    --train_celltype Celltype_training \
+    --test_celltype Celltype_training \
+    --train_batch Data_source \
+    --test_batch None \
+    --test_batch_map 'GSE115978=samples,GSE123139=Sample.Short.Name,Zhengsorted=None' \
+    --n_jobs 12 \
+    --n_runs 5
+```
+
+When `--base_seed` is omitted, the first invocation generates each run seed
+from system entropy and stores it under `SAVE_PATH/.benchmark_state/seeds/`.
+All methods in the same result root reuse that run seed, including after a
+restart. Pass `--base_seed` only when an explicitly reproducible fixed schedule
+is desired.
+
+A directory run prepares the reference once for each run and seed, then predicts
+every `.h5ad` file sequentially. CellTypist reuses one fitted classifier.
+CHETAH builds its profiles/tree per classifier call, SingleR trains its
+query-compatible index per query, and Seurat finds query-specific anchors (and
+its implicit reference PCA) per query; these operations are included in each
+query's prediction runtime.
+
+Runtime uses one common wrapper boundary for every method. Reading the source
+`.h5ad` files, evaluation and plotting are excluded; per-run method
+preprocessing, training and prediction are included.
+Python-to-R exchange and R subprocess startup are therefore included for the R
+methods. These values represent end-to-end method execution, not isolated
+algorithm-kernel time. Use fresh, uninterrupted runs for reportable timing:
+scGPT can resume an interrupted epoch checkpoint, but the final metric cannot
+recover wall time spent by the earlier terminated process.
+
+Standard-mode automatic resume is always enabled; there is no resume flag.
+Completion markers validate the seed, training options, input-file identity
+and all required result files. Re-running the same command skips completed
+datasets. R reference objects and scGPT checkpoints can be loaded when later
+queries remain; CellTypist retrains if an incomplete run still needs prediction.
+scGPT resumes at the next complete epoch if fine-tuning was interrupted. Results
+created before these markers existed are intentionally recomputed once, because
+the pipeline cannot prove that they came from the same protocol.
+
+The repository's `run_cmd.sh` already groups the seven independent tests this
+way and keeps CAF separate because CAF uses a different training reference.
 
 For a dataset without query batch or ground-truth metadata:
 
@@ -173,39 +282,66 @@ bash run_script.sh \
     --test_celltype None \
     --train_batch None \
     --test_batch None \
+    --n_jobs 12 \
     --n_runs 1
 ```
 
 Do not use the same cells for reference and query when reporting benchmark
 performance; doing so measures training-set performance.
 
-## Defaults and memory safeguards
+## Defaults, fairness, and memory safeguards
 
-The wrappers leave package defaults implicit unless a fixed safeguard is
-needed to prevent large sparse references from exhausting RAM or VRAM. These
-exceptions are applied consistently across datasets; they are not tuned using
-query labels:
+No wrapper samples, caps, or aggregates away training/reference cells. Every
+method receives the full reference population. Query labels are never used to
+tune a method or its resource settings.
 
-| Method | Intentional non-default safeguard |
+The formal launcher fixes `--n_jobs 12`. CellTypist receives `n_jobs=12`, and
+SingleR receives both `MulticoreParam(workers=12)` and `num.threads=12`.
+Seurat and CHETAH retain their installed algorithms while their BLAS/OpenMP
+libraries are capped at twelve threads. scGPT DataLoaders use twelve workers. This
+is one common resource ceiling, not dataset- or method-specific tuning.
+
+| Method | Execution policy without dropping cells |
 | --- | --- |
-| CellTypist | Large references use sparse mini-batch SGD and disable mean-centering. |
-| CHETAH | Reference cells are aggregated to at most 200 profiles per cell type. |
-| SingleR | The reference is aggregated with 20 centers per cell type. |
-| Seurat | Reference training is capped at 50,000 stratified cells. |
-| scGPT | Training is capped at 20,000 stratified cells, prediction uses 2,048-cell chunks, and batch size is 16 rather than the tutorial value 32. |
+| CellTypist | Uses the official centered logistic-regression defaults, with only `random_state` and the common `n_jobs` allowance supplied. Prediction is run in one call unless its estimated dense scaling workspace would exceed 23 GiB; only then is it split into output-equivalent cell batches. Training is not batched. |
+| CHETAH | Uses all reference cells and installed classifier defaults. It uses a full query unless the estimated query-dependent working set can be reduced by output-equivalent batching. The default 200 discriminating genes is bounded only when fewer than 200 genes overlap. |
+| SingleR | Uses all reference cells with the official single-cell reference recommendation `de.method="wilcox"`, `aggr.ref=FALSE`, and fine-tuning and pruning at installed defaults. BiocParallel and the native thread parameter receive the common worker allowance. If needed, classification is batched and pruning is applied once after merging the complete result. |
+| Seurat | Uses all reference and query cells with the official `NormalizeData`/`FindVariableFeatures`/`ScaleData` and label-transfer workflow; prediction is not chunked. |
+| scGPT | Uses all reference cells, sparse-equivalent binning, mini-batch training, and batch-aligned prediction chunks (2,048 cells with the default batch size). Every query finishes row-ordered binning before tokenization begins; temporary sparse CSR chunks are deleted after that prediction call and are not a reusable cache. |
 
-For scGPT, the remaining annotation settings follow the official tutorial:
-3,001 tokens, 10 epochs, 51 expression bins, learning rate `1e-4`, dropout
-`0.2`, and scheduler ratio `0.9`. The sparse binning/tokenization path is an
-implementation optimization only: it preserves the same row order, binning
-formula, random-number consumption and token tensors without materializing
-the full dense matrix. Removing the safeguards above can change effective
-training data or optimizer behavior and can reproduce the observed
-out-of-memory kills.
+The 23 GiB value used by the R wrappers and CellTypist prediction is a
+best-effort planning threshold,
+not a whole-process guarantee. The common pipeline retains one lean reference
+object containing expression and required metadata (plus `counts` for Seurat),
+without a second deep training copy. Selective H5AD reads never materialize
+unused `raw`, unrelated layers, embeddings, graphs or unstructured metadata.
+Per-run AnnData objects share the expression matrices but receive independent
+metadata frames. Method-owned transformations, including CellTypist reference
+normalization, are performed independently inside each run's timing boundary.
+In addition, CellTypist's centered default densifies
+the integrated 236,975-by-19,836 reference to about 35 GiB before scaler working
+copies. Consequently the official CellTypist Broad run, and potentially other
+full-reference runs, require more than 23 GiB. No optimizer or reference
+sampling fallback is silently substituted when that happens.
+
+When their memory fallback is needed, SingleR, CHETAH and CellTypist retain
+every query cell and concatenate outputs in original order. SingleR performs
+global pruning only after all batches are merged. Seurat prediction is not
+chunked because its transfer anchors depend on the complete query context.
+
+scGPT uses the tutorial's core settings: a 10% validation split, 3,001 tokens,
+batch size 32, all 10 epochs, 51 expression bins, learning rate `1e-4`, dropout
+`0.2`, scheduler ratio `0.9`, and an unshuffled training DataLoader. There is
+no early stopping; after every configured epoch completes, inference restores
+the checkpoint with the lowest validation loss. The common twelve-worker cap,
+sparse-equivalent binning and CLS-only execution shortcut are benchmark
+implementation/resource settings and must be reported as such.
 
 ## Output
 
-Each run is saved to `SAVE_PATH/METHOD/RUN_ID/`:
+A single-query run is saved to `SAVE_PATH/METHOD/RUN_ID/`. A standard query
+directory keeps the existing benchmark layout and saves each file to
+`SAVE_PATH/DATASET/METHOD/RUN_ID/`:
 
 - `METHOD_metrics.csv`
 - `per_class_metrics.csv`
@@ -215,10 +351,73 @@ Each run is saved to `SAVE_PATH/METHOD/RUN_ID/`:
 - prediction, ground-truth, batch and comparison UMAP PNGs when their keys are
   available
 
-Metrics include accuracy, balanced accuracy, macro/micro/weighted precision,
-recall and F1, one-vs-rest AUC, MCC, Cohen's kappa, runtime, RAM and VRAM.
+Primary accuracy, balanced accuracy, macro/micro/weighted precision, recall
+and F1, one-vs-rest AUC, MCC, Cohen's kappa, per-class metrics and confusion
+matrices all use the dataset-specific source ontology. When source ground truth
+is coarser than the fixed training ontology, accepted child predictions are
+projected to the source parent before evaluation; parent AUC scores sum the
+accepted child-class probabilities. `compatible_accuracy` remains only as a
+backward-compatible alias of primary `accuracy`. Normalized exact-label
+equality is reported separately only as `exact_match_accuracy`,
+`n_exact_match_correct`, and the per-cell `exact_match_correct` prediction
+column. Evaluation coverage and
+missing/unsupported and exact/coarse truth counts are also recorded. The
+separate CAF task uses its seven exact targets, so it receives no projection or
+compatible-label relaxation and its primary and exact-match metrics coincide.
 Each method directory also contains `metrics_summary.csv` and
 `metrics_aggregate.csv` across repeated runs.
 
 The optional `utils/analysis.py` can aggregate already completed method runs,
 but it is not called by `run_cmd.sh` or `run_script.sh`.
+
+## Immune / non-immune evaluation
+
+Each evaluated non-CAF run also writes `immune/` and `non-immune/`, containing
+`METHOD_metrics.csv`, `per_class_metrics.csv`, `confusion_matrix.csv` and
+`METHOD_confusion_matrix.png`. Both groups are emitted even when one is empty
+(zero cells, NaN quality metrics, header-only matrices). Each method directory
+adds `immune_metrics_summary.csv`, `immune_metrics_aggregate.csv`,
+`non_immune_metrics_summary.csv` and `non_immune_metrics_aggregate.csv`.
+Each group uses the original summary (one row/run) and aggregate (metric
+mean/sample SD) formats. No method-level group directories are created;
+original summary and aggregate files are unchanged.
+
+Edit the explicit `IMMUNE_LABELS` and `NON_IMMUNE_LABELS` at the top of
+[`utils/compartment_evaluation.py`](utils/compartment_evaluation.py), keeping
+the identical file in scLightGAT synchronized. Cells are selected by **ground
+truth**; cell-type labels remain intact, and cross-compartment wrong predictions
+remain errors. The existing source-compatible evaluator is reused. Metrics are
+conditional on that selected compartment, not binary lineage classification or
+full-dataset one-vs-rest averages. Aggregate specificity averages true classes
+with positive support. Unsupported/unassigned truths are excluded and reported;
+they are never guessed to be non-immune. CAF is skipped. Runtime/RAM/VRAM and
+original whole-dataset metrics remain unchanged.
+
+New runs save complete class scores in `annotation_scores.npz`, enabling exact
+later AUC recalculation. Old maximum `prediction_score` and global per-class AUC
+cannot reconstruct conditional compartment AUC: without a score cache it stays
+NaN (`unavailable_no_class_scores`). An original `hard_predictions` AUC can be
+reconstructed; `--allow_hard_auc` explicitly requests this different one-hot
+score fallback for other historical runs. Single-true-class AUC is undefined.
+Completed-run resume supplements derived files without retraining.
+
+From this project directory, using an existing benchmark Python environment:
+
+```bash
+python backfill_compartment_metrics.py
+python bar_chart_immune.py --results_dir result --sclightgat_results_dir \
+    /Group16T/common/ccuc/scLightGAT/scLightGAT/sclightgat_exp_results
+python bar_chart_non_immune.py --results_dir result --sclightgat_results_dir \
+    /Group16T/common/ccuc/scLightGAT/scLightGAT/sclightgat_exp_results
+```
+
+Backfill supports multiple `--results_dir` roots, `--datasets`, `--methods`,
+`--no_plots` (CSVs only) and separate `--output_dir`; originals and completion
+markers are untouched, and in-progress/incomplete runs are skipped. See `--help`.
+
+The two bar chart scripts are standalone and live only alongside the original
+`bar_chart.py`, with no plotting helper in utils. Edit `METRIC_GROUPS` at the
+top of each script to select metrics. Outputs are PNGs only. Dataset error bars
+are sample SD across runs; `Overall` equally weights available non-CAF dataset
+means and has no error bars, matching the original chart. Empty/missing metrics
+are never zero-filled. After changing definitions, rerun backfill.

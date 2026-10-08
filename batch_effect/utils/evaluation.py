@@ -25,6 +25,7 @@ SCIB_METRIC_KEYS = [
     "ARI_cluster/label",
     "ASW_label",
     "ASW_label/batch",
+    "BRAS",
     "PCR_batch",
     "cell_cycle_conservation",
     "isolated_label_F1",
@@ -32,6 +33,7 @@ SCIB_METRIC_KEYS = [
     "graph_conn",
     "kBET",
     "iLISI",
+    "CiLISI",
     "cLISI",
     "hvg_overlap",
     "trajectory",
@@ -62,15 +64,6 @@ def _ensure_category(adata_obj, key):
         adata_obj.obs[key] = adata_obj.obs[key].astype("category")
 
 
-def _safe_nanmean(values):
-    arr = np.asarray(values, dtype=float)
-    if arr.size == 0:
-        return np.nan
-    if not np.any(np.isfinite(arr)):
-        return np.nan
-    return float(np.nanmean(arr))
-
-
 def _safe_metric(metric_name, fn, *args, **kwargs):
     try:
         return float(fn(*args, **kwargs))
@@ -84,79 +77,6 @@ def _align_pre_post(adata_pre, adata_post):
     if len(common) == 0:
         raise ValueError("No common cells between pre and post AnnData")
     return adata_pre[common].copy(), adata_post[common].copy()
-
-
-# ============================================================
-# Over-correction (custom metric, kept as-is)
-# ============================================================
-
-def compute_overcorrection_from_adata(
-    adata,
-    embed_key="X_pca",
-    celltype_col="celltype",
-    n_neighbors=100,
-    n_pools=100,
-    n_samples_per_pool=100,
-    seed=124,
-    baseline=None,
-):
-    """Compute over-correction score using pooled neighborhood purity."""
-
-    if embed_key in adata.obsm.keys():
-        Z = adata.obsm[embed_key]
-    elif embed_key == "X":
-        Z = adata.X.toarray() if hasattr(adata.X, "toarray") else adata.X
-    else:
-        raise ValueError(f"Embedding '{embed_key}' not found in adata.obsm")
-
-    celltype_series = pd.Series(adata.obs[celltype_col]).reset_index(drop=True)
-    celltype_values = celltype_series.values
-    celltype_dict = celltype_series.value_counts().to_dict()
-
-    n_cells = Z.shape[0]
-    n_neighbors = min(n_neighbors, n_cells - 1)
-
-    nne = NearestNeighbors(n_neighbors=1 + n_neighbors, n_jobs=-1)
-    nne.fit(Z)
-    kmatrix = nne.kneighbors_graph(Z) - sp_sparse.identity(n_cells)
-
-    np.random.seed(seed)
-    total_score = 0.0
-
-    for _ in range(n_pools):
-        indices = np.random.choice(
-            np.arange(n_cells),
-            size=min(n_samples_per_pool, n_cells),
-            replace=False,
-        )
-        pool_purity = []
-
-        for i in indices:
-            neighbor_indices = kmatrix[i].nonzero()[1]
-            max_compare = min(celltype_dict[celltype_values[i]], n_neighbors)
-
-            if len(neighbor_indices) > 0 and max_compare > 0:
-                is_same_type = (
-                    celltype_values[neighbor_indices[:max_compare]] == celltype_values[i]
-                )
-                pool_purity.append(np.mean(is_same_type))
-            else:
-                pool_purity.append(1.0)
-
-        total_score += np.mean(pool_purity)
-
-    raw_oc_mean = 1 - (total_score / float(n_pools))
-
-    if baseline is not None:
-        oc_norm = float(raw_oc_mean - baseline)
-        print(
-            f"[OC] baseline={baseline:.4f}, integrated={raw_oc_mean:.4f}, "
-            f"normalized={oc_norm:.4f}"
-        )
-        return oc_norm
-
-    print(f"[OC] raw OC = {raw_oc_mean:.4f}")
-    return float(raw_oc_mean)
 
 
 # ============================================================
@@ -330,6 +250,83 @@ def silhouette_batch(
     if return_all:
         return asw, sil_means, sil_df
     return asw
+
+
+def bras(adata, batch_key, label_key, embed):
+    """Batch-removal-adapted silhouette using cosine mean-other distances."""
+    if embed not in adata.obsm.keys():
+        raise KeyError(f"{embed} not in obsm")
+
+    scores = []
+    for group in adata.obs[label_key].unique():
+        mask = np.asarray(adata.obs[label_key] == group)
+        embedding = adata.obsm[embed][mask]
+        if issparse(embedding):
+            embedding = embedding.toarray()
+        embedding = np.asarray(embedding, dtype=float)
+
+        # Re-factorize within this cell type. AnnData may retain unused global
+        # categorical levels after subsetting, whose non-contiguous codes (for
+        # example 0 and 8) cannot index a two-row per-group accumulator.
+        batch_codes, batch_levels = pd.factorize(
+            adata.obs.loc[mask, batch_key],
+            sort=False,
+        )
+        if np.any(batch_codes < 0):
+            raise ValueError(f"{batch_key} contains missing values")
+        n_batches = len(batch_levels)
+        n_cells = embedding.shape[0]
+        if (n_batches == 1) or (n_batches == n_cells):
+            continue
+
+        norms = np.linalg.norm(embedding, axis=1, keepdims=True)
+        normalized = np.divide(
+            embedding,
+            norms,
+            out=np.zeros_like(embedding),
+            where=norms > 0,
+        )
+
+        batch_counts = np.bincount(batch_codes)
+        batch_sums = np.zeros((n_batches, normalized.shape[1]), dtype=float)
+        np.add.at(batch_sums, batch_codes, normalized)
+
+        own_counts = batch_counts[batch_codes]
+        other_counts = n_cells - own_counts
+        valid = (own_counts > 1) & (other_counts > 0)
+
+        intra = np.zeros(n_cells, dtype=float)
+        inter = np.zeros(n_cells, dtype=float)
+        intra[valid] = 1.0 - np.einsum(
+            "ij,ij->i",
+            normalized[valid],
+            batch_sums[batch_codes[valid]] - normalized[valid],
+        ) / (own_counts[valid] - 1)
+        inter[valid] = 1.0 - np.einsum(
+            "ij,ij->i",
+            normalized[valid],
+            normalized.sum(axis=0) - batch_sums[batch_codes[valid]],
+        ) / other_counts[valid]
+
+        # Cosine distances are bounded by [0, 2]. Round-off in the
+        # mean-other shortcut can otherwise make the silhouette unstable.
+        np.clip(intra, 0.0, 2.0, out=intra)
+        np.clip(inter, 0.0, 2.0, out=inter)
+        intra[intra <= 1e-12] = 0.0
+        inter[inter <= 1e-12] = 0.0
+
+        denominator = np.maximum(intra[valid], inter[valid])
+        silhouettes = np.zeros(n_cells, dtype=float)
+        silhouettes[valid] = np.divide(
+            inter[valid] - intra[valid],
+            denominator,
+            out=np.zeros_like(denominator),
+            where=denominator > np.finfo(float).eps,
+        )
+        np.clip(silhouettes, -1.0, 1.0, out=silhouettes)
+        scores.append(float(np.clip(np.mean(1.0 - np.abs(silhouettes)), 0.0, 1.0)))
+
+    return float(np.mean(scores)) if scores else np.nan
 
 
 def get_isolated_labels(adata, label_key, batch_key, iso_threshold, verbose):
@@ -691,7 +688,49 @@ def get_cell_cycle_genes(organism="mouse"):
     return pd.read_table(gene_file)
 
 
-def score_cell_cycle(adata_obj, organism="mouse"):
+def _restore_scquartz_log_expression(adata_obj):
+    """Undo scQuartz's final z-scaling for expression-based metrics only."""
+    required = {"mean", "std", "scquartz_expression_zero"}
+    if not required.issubset(adata_obj.var.columns):
+        return adata_obj
+
+    matrix = adata_obj.X
+    if issparse(matrix):
+        matrix = matrix.toarray()
+    matrix = np.asarray(matrix).copy()
+    dtype = matrix.dtype
+    mean = adata_obj.var["mean"].to_numpy(dtype=dtype, copy=False)
+    std = adata_obj.var["std"].to_numpy(dtype=dtype, copy=False)
+    matrix *= std
+    matrix += mean
+    np.maximum(matrix, 0.0, out=matrix)
+    adata_obj.X = matrix
+    return adata_obj
+
+
+def infer_cell_cycle_organism(adata_obj):
+    """Infer human versus mouse from scIB marker overlap with ``var_names``."""
+    var_names = set(map(str, adata_obj.var_names))
+    overlaps = {}
+    for organism in ("human", "mouse"):
+        gene_map = get_cell_cycle_genes(organism)
+        overlaps[organism] = max(
+            sum(str(gene) in var_names for gene in gene_map[column].dropna())
+            for column in ("gene_name", "gene_id")
+        )
+
+    organism = max(overlaps, key=overlaps.get)
+    if overlaps[organism] == 0:
+        raise ValueError(
+            "cell cycle genes not found in adata.var_names for human or mouse"
+        )
+    return organism
+
+
+def score_cell_cycle(adata_obj, organism="auto"):
+    if organism == "auto":
+        organism = infer_cell_cycle_organism(adata_obj)
+
     def filter_genes(adata_local, df, columns=None):
         if columns is None:
             columns = ["gene_name", "gene_id"]
@@ -725,6 +764,8 @@ def _get_pcr_before_after(
 ):
     raw_sub = adata_pre[adata_pre.obs[batch_key] == batch].copy()
     post_sub = adata_post[adata_post.obs[batch_key] == batch].copy()
+
+    _restore_scquartz_log_expression(raw_sub)
 
     if raw_sub.shape[0] != post_sub.shape[0]:
         raise ValueError(
@@ -761,11 +802,14 @@ def cell_cycle_conservation(
     batch_key,
     embed=None,
     agg_func=np.nanmean,
-    organism="mouse",
+    organism="auto",
     n_comps=50,
 ):
     _check_adata(adata_pre)
     _check_adata(adata_post)
+
+    if organism == "auto":
+        organism = infer_cell_cycle_organism(adata_pre)
 
     if embed == "X_pca":
         embed = None
@@ -983,9 +1027,11 @@ def morans_i(
     _check_sanity(adata_post, batch_key, hvgs)
 
     adata_post_local = adata_post.copy()
+    _restore_scquartz_log_expression(adata_post_local)
     sc.pp.neighbors(adata_post_local, use_rep=embed)
 
     adata_pre_local = adata_pre.copy()
+    _restore_scquartz_log_expression(adata_pre_local)
     _ensure_category(adata_pre_local, batch_key)
 
     if hvgs is None:
@@ -1121,22 +1167,41 @@ def diffusion_nn(adata, k, max_iterations=26):
     return k_indices
 
 
-def _kbet_single_py(batch, knn):
+def _kbet_single_py(
+    batch,
+    knn,
+    k0=None,
+    n_repeat=100,
+    alpha=0.05,
+    rng=None,
+):
+    """Python port of the observed rejection-rate test in R kBET."""
     batch_series = pd.Series(batch).reset_index(drop=True)
-    batch_ref = batch_series.value_counts(normalize=True).sort_index()
-    batch_levels = batch_ref.index.tolist()
-
-    if knn is None:
+    n_obs = len(batch_series)
+    if knn is None or n_obs <= 10:
         return np.nan
 
-    reject_flags = []
-    for i in range(knn.shape[0]):
-        idx = np.asarray(knn[i])
-        idx = idx[np.isfinite(idx)].astype(int)
-        idx = idx[(idx >= 0) & (idx < len(batch_series))]
+    batch_ref = batch_series.value_counts(normalize=True, sort=False)
+    batch_levels = batch_ref.index.tolist()
+    n_batches = len(batch_levels)
+    if n_batches <= 1:
+        return np.nan
 
-        if len(idx) == 0:
-            continue
+    if k0 is None or k0 >= n_obs:
+        k0 = int(np.floor(np.mean(batch_ref.to_numpy()) * n_obs / 4.0))
+    k0 = int(k0)
+    if k0 < 1:
+        return np.nan
+
+    # R kBET uses the first k0 - 1 neighbours plus the query itself.
+    # Expected counts still use all k0 slots, including NA neighbour slots.
+    reject_flags = np.full(n_obs, np.nan, dtype=float)
+    expected = batch_ref.to_numpy(dtype=float) * k0
+    for i in range(n_obs):
+        idx = np.asarray(knn[i, : max(k0 - 1, 0)], dtype=float)
+        idx = idx[np.isfinite(idx)].astype(int)
+        idx = idx[(idx >= 0) & (idx < n_obs)]
+        idx = np.concatenate((idx, np.asarray([i], dtype=int)))
 
         local = batch_series.iloc[idx]
         obs = (
@@ -1144,22 +1209,26 @@ def _kbet_single_py(batch, knn):
             .reindex(batch_levels, fill_value=0)
             .to_numpy(dtype=float)
         )
-        n_local = float(obs.sum())
-        if n_local <= 0:
-            continue
+        stat = np.sum((obs - expected) ** 2 / expected)
+        p_val = chi2.sf(stat, n_batches - 1)
+        reject_flags[i] = float(p_val < alpha)
 
-        exp = batch_ref.to_numpy(dtype=float) * n_local
-        valid = exp > 0
-        if np.sum(valid) <= 1:
-            continue
+    test_size = int(np.ceil(0.1 * n_obs))
+    if test_size < 25 and n_obs > 25:
+        test_size = 25
+    test_size = min(test_size, n_obs)
+    if rng is None:
+        rng = np.random.default_rng(0)
 
-        stat = np.sum((obs[valid] - exp[valid]) ** 2 / exp[valid])
-        p_val = 1.0 - chi2.cdf(stat, int(np.sum(valid) - 1))
-        reject_flags.append(float(p_val < 0.05))
+    observed = []
+    for _ in range(n_repeat):
+        sampled = rng.choice(n_obs, size=test_size, replace=False)
+        if np.any(np.isfinite(reject_flags[sampled])):
+            observed.append(float(np.nanmean(reject_flags[sampled])))
 
-    if len(reject_flags) == 0:
+    if not observed:
         return np.nan
-    return float(np.mean(reject_flags))
+    return float(np.mean(observed))
 
 
 def kBET(
@@ -1195,6 +1264,7 @@ def kBET(
     skipped = counts.index.difference(labels)
 
     kbet_scores = {"cluster": list(skipped), "kBET": [np.nan] * len(skipped)}
+    rng = np.random.default_rng(0)
 
     for clus in labels:
         adata_sub = adata_tmp[adata_tmp.obs[label_key] == clus, :].copy()
@@ -1216,6 +1286,8 @@ def kBET(
                 score = _kbet_single_py(
                     batch=adata_sub.obs[batch_key],
                     knn=nn_index_tmp,
+                    k0=k0,
+                    rng=rng,
                 )
             except NeighborsError:
                 score = 1.0
@@ -1235,6 +1307,8 @@ def kBET(
                     score = _kbet_single_py(
                         batch=adata_sub.obs[batch_key],
                         knn=nn_index_tmp,
+                        k0=k0,
+                        rng=rng,
                     )
                 except NeighborsError:
                     score = 1.0
@@ -1459,6 +1533,10 @@ def ilisi_graph(
     _check_adata(adata)
     _check_batch(batch_key, adata.obs)
 
+    nbatches = adata.obs[batch_key].nunique()
+    if scale and nbatches <= 1:
+        return np.nan
+
     adata_tmp = recompute_knn(adata, type_, use_rep)
     ilisi_score = lisi_graph_py(
         adata=adata_tmp,
@@ -1472,12 +1550,51 @@ def ilisi_graph(
     ilisi = np.nanmedian(ilisi_score)
 
     if scale:
-        nbatches = adata.obs[batch_key].nunique()
-        if nbatches <= 1:
-            return 1.0
         ilisi = (ilisi - 1.0) / (nbatches - 1.0)
 
     return float(ilisi)
+
+
+def cilisi_graph(
+    adata,
+    batch_key,
+    label_key,
+    use_rep="X_emb",
+    k0=90,
+    subsample=None,
+    scale=True,
+    verbose=False,
+):
+    """Cell-type-adjusted iLISI from the Metrics Matter implementation."""
+    _check_adata(adata)
+    _check_batch(batch_key, adata.obs)
+    _check_batch(label_key, adata.obs)
+
+    weighted_scores = []
+    total_cells = 0
+    for label in adata.obs[label_key].unique():
+        adata_group = adata[adata.obs[label_key] == label].copy()
+        adata_group.obs[batch_key] = (
+            adata_group.obs[batch_key]
+            .astype("category")
+            .cat.remove_unused_categories()
+        )
+        score = ilisi_graph(
+            adata_group,
+            batch_key=batch_key,
+            type_="knn",
+            use_rep=use_rep,
+            k0=90,
+            subsample=None,
+            scale=scale,
+            verbose=verbose,
+        )
+        weighted_scores.append(score * adata_group.n_obs)
+        total_cells += adata_group.n_obs
+
+    if total_cells == 0:
+        return np.nan
+    return float(np.nansum(weighted_scores) / total_cells)
 
 
 def clisi_graph(
@@ -1674,7 +1791,7 @@ def metrics_all_local(
     cluster_nmi=None,
     nmi_method="arithmetic",
     si_metric="euclidean",
-    organism="mouse",
+    organism="auto",
     n_isolated=None,
     subsample=0.5,
     n_cores=1,
@@ -1745,6 +1862,14 @@ def metrics_all_local(
             metric=si_metric,
             return_all=False,
             verbose=False,
+        ),
+        "BRAS": _safe_metric(
+            "BRAS",
+            bras,
+            adata_int,
+            batch_key=batch_key,
+            label_key=label_key,
+            embed=embed,
         ),
         "PCR_batch": _safe_metric(
             "PCR_batch",
@@ -1817,6 +1942,17 @@ def metrics_all_local(
             scale=True,
             verbose=verbose,
         ),
+        "CiLISI": _safe_metric(
+            "CiLISI",
+            cilisi_graph,
+            adata_int,
+            batch_key=batch_key,
+            label_key=label_key,
+            use_rep=embed,
+            subsample=None,
+            scale=True,
+            verbose=verbose,
+        ),
         "cLISI": _safe_metric(
             "cLISI",
             clisi_graph,
@@ -1849,6 +1985,7 @@ def metrics_all_local(
             adata,
             adata_int,
             batch_key=batch_key,
+            embed=embed,
         ),
     }
 
@@ -1866,13 +2003,12 @@ def evaluate_embedding_scib(
     celltype_key="celltype",
     leiden_resolution=0.1,
     random_state=42,
-    compute_oc=False,
     precomputed_cluster_key=None,
     adata_pre=None,
     scib_type=None,
     scib_subsample=0.5,
     scib_n_cores=1,
-    scib_organism="mouse",
+    scib_organism="auto",
     scib_verbose=False,
 ):
     """
@@ -1919,36 +2055,6 @@ def evaluate_embedding_scib(
     results["ASW_bio"] = results["ASW_label"]
     results["ASW_batch"] = results["ASW_label/batch"]
     results["GraphConn_celltype"] = results["graph_conn"]
-
-    results["AVG_bio"] = _safe_nanmean([
-        results["NMI"],
-        results["ARI"],
-        results["ASW_bio"],
-    ])
-
-    results["AVG_batch"] = _safe_nanmean([
-        results["ASW_batch"],
-        results["GraphConn_celltype"],
-    ])
-
-    # Keep custom metric behavior as before.
-    if compute_oc:
-        if "X_pca" not in adata_post_aligned.obsm:
-            sc.pp.pca(adata_post_aligned)
-
-        oc_raw = compute_overcorrection_from_adata(
-            adata_post_aligned,
-            embed_key="X_pca",
-            celltype_col=celltype_key,
-        )
-        results["OverCorrection"] = compute_overcorrection_from_adata(
-            adata_post_aligned,
-            embed_key=embed_key,
-            celltype_col=celltype_key,
-            baseline=oc_raw,
-        )
-    else:
-        results["OverCorrection"] = np.nan
 
     results["scib_cluster_key"] = precomputed_cluster_key if precomputed_cluster_key is not None else "cluster"
     results["scib_type"] = scib_type

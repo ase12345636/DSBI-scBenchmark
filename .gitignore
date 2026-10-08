@@ -1,6 +1,7 @@
+plots*/
 result*/
-analysis_output/
-__pycache__/*
-*.pyc
-.vscode
+output*/
+__pycache__/
+data/
+.cache/
 models/

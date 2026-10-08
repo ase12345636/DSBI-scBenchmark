@@ -1,12 +1,32 @@
 #!/usr/bin/env bash
 
-source /Group16T/common/ccuc/miniconda3_gb10/etc/profile.d/conda.sh
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cache_dir="$script_dir/.cache"
+
+mkdir -p "$cache_dir/matplotlib" "$cache_dir/numba"
+export PYTHONDONTWRITEBYTECODE=1
+export MPLCONFIGDIR="$cache_dir/matplotlib"
+export NUMBA_CACHE_DIR="$cache_dir/numba"
+export SCIPY_ARRAY_API=1
+
+cd "$script_dir"
+
+if [[ -n "${SCBENCHMARK_CONDA_SH:-}" ]]; then
+    source "$SCBENCHMARK_CONDA_SH"
+elif command -v conda >/dev/null 2>&1; then
+    eval "$(conda shell.bash hook)"
+else
+    echo "Error: initialize Conda or set SCBENCHMARK_CONDA_SH." >&2
+    exit 1
+fi
 
 train_celltype="celltype"
 test_celltype="celltype"
 train_batch="batch"
 test_batch="batch"
+test_batch_map=""
 n_runs=1
+n_jobs=12
 base_seed=""
 save_models=""
 scgpt_model_dir=""
@@ -41,8 +61,16 @@ while [[ "$#" -gt 0 ]]; do
             test_batch="$2"
             shift 2
             ;;
+        --test_batch_map)
+            test_batch_map="$2"
+            shift 2
+            ;;
         --n_runs|--run_times)
             n_runs="$2"
+            shift 2
+            ;;
+        --n_jobs)
+            n_jobs="$2"
             shift 2
             ;;
         --base_seed)
@@ -80,6 +108,23 @@ if ! [[ "$n_runs" =~ ^[1-9][0-9]*$ ]]; then
     echo "Error: --n_runs must be a positive integer." >&2
     exit 1
 fi
+if ! [[ "$n_jobs" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Error: --n_jobs must be a positive integer." >&2
+    exit 1
+fi
+
+# Every method receives the same explicit CPU allowance. Methods with a native
+# worker API also receive --n_jobs; these variables cap BLAS/OpenMP libraries
+# used by methods without one and prevent hidden oversubscription.
+export OMP_NUM_THREADS="$n_jobs"
+export OMP_DYNAMIC=FALSE
+export OPENBLAS_NUM_THREADS="$n_jobs"
+export MKL_NUM_THREADS="$n_jobs"
+export MKL_DYNAMIC=FALSE
+export BLIS_NUM_THREADS="$n_jobs"
+export VECLIB_MAXIMUM_THREADS="$n_jobs"
+export NUMEXPR_NUM_THREADS="$n_jobs"
+export RCPP_PARALLEL_NUM_THREADS="$n_jobs"
 
 common_args=(
     --train_path "$train_path"
@@ -90,7 +135,11 @@ common_args=(
     --train_batch "$train_batch"
     --test_batch "$test_batch"
     --n_runs "$n_runs"
+    --n_jobs "$n_jobs"
 )
+if [[ -n "$test_batch_map" ]]; then
+    common_args+=(--test_batch_map "$test_batch_map")
+fi
 if [[ -n "$base_seed" ]]; then
     common_args+=(--base_seed "$base_seed")
 fi
@@ -105,7 +154,11 @@ echo "Train celltype: $train_celltype"
 echo "Test celltype: $test_celltype"
 echo "Train batch: $train_batch"
 echo "Test batch: $test_batch"
+if [[ -n "$test_batch_map" ]]; then
+    echo "Test batch map: $test_batch_map"
+fi
 echo "Runs: $n_runs"
+echo "CPU workers per method: $n_jobs"
 
 failed_methods=()
 
@@ -121,29 +174,29 @@ run_method() {
     fi
 }
 
-if conda activate Celltypist; then
-    run_method "Celltypist" "Celltypist/Celltypist.py"
-else
-    failed_methods+=("Celltypist(environment)")
-fi
+# if conda activate Celltypist; then
+#     run_method "Celltypist" "Celltypist/Celltypist.py"
+# else
+#     failed_methods+=("Celltypist(environment)")
+# fi
 
-if conda activate CHETAH; then
-    run_method "CHETAH" "CHETAH/CHETAH.py"
-else
-    failed_methods+=("CHETAH(environment)")
-fi
+# if conda activate CHETAH; then
+#     run_method "CHETAH" "CHETAH/CHETAH.py"
+# else
+#     failed_methods+=("CHETAH(environment)")
+# fi
 
-if conda activate Seurat; then
-    run_method "Seurat" "Seurat/Seurat.py"
-else
-    failed_methods+=("Seurat(environment)")
-fi
+# if conda activate Seurat; then
+#     run_method "Seurat" "Seurat/Seurat.py"
+# else
+#     failed_methods+=("Seurat(environment)")
+# fi
 
-if conda activate SingleR; then
-    run_method "SingleR" "SingleR/SingleR.py"
-else
-    failed_methods+=("SingleR(environment)")
-fi
+# if conda activate SingleR; then
+#     run_method "SingleR" "SingleR/SingleR.py"
+# else
+#     failed_methods+=("SingleR(environment)")
+# fi
 
 if conda activate scGPT; then
     if [[ -z "$scgpt_model_dir" ]]; then
@@ -152,10 +205,13 @@ if conda activate scGPT; then
     if [[ ! -f "$scgpt_model_dir/best_model.pt" || \
           ! -f "$scgpt_model_dir/vocab.json" || \
           ! -f "$scgpt_model_dir/args.json" ]]; then
-        python3 scGPT/download_checkpoint.py --output_dir "$scgpt_model_dir"
+        echo "Error: scGPT checkpoint is incomplete: $scgpt_model_dir" >&2
+        echo "Run scGPT/download_checkpoint.py explicitly before retrying." >&2
+        failed_methods+=("scGPT(checkpoint)")
+    else
+        run_method "scGPT" "scGPT/scGPT.py" \
+            --scgpt_model_dir "$scgpt_model_dir"
     fi
-    run_method "scGPT" "scGPT/scGPT.py" \
-        --scgpt_model_dir "$scgpt_model_dir"
 else
     failed_methods+=("scGPT(environment)")
 fi

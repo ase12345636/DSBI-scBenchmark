@@ -2,13 +2,13 @@
 
 import os
 import sys
+from pathlib import Path
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import celltypist
 import numpy as np
 import pandas as pd
-from scipy import sparse
 
 from utils.dataset import normalize_log1p
 from utils.pipeline import (
@@ -20,35 +20,18 @@ from utils.pipeline import (
 )
 
 
-def _training_options(reference, seed):
-    """Choose CellTypist's sparse-safe trainer for large references."""
-    is_large = reference.n_obs > 100_000 and reference.n_vars > 10_000
-    if not is_large:
-        return {"random_state": seed}
-
-    matrix_format = "sparse" if sparse.issparse(reference.X) else "dense"
-    dense_gib = reference.n_obs * reference.n_vars * 8 / 1024**3
-    print(
-        "[Celltypist] large reference detected "
-        f"({matrix_format}; dense equivalent ~{dense_gib:.1f} GiB); "
-        "using sparse-safe mini-batch SGD"
-    )
-    return {
-        "with_mean": False,
-        "use_SGD": True,
-        "mini_batch": True,
-        "random_state": seed,
-    }
-
-
 def train_celltypist(adata, seed, run_out_path, args):
     """Train CellTypist on log-normalized reference expression."""
     seed_python_numpy(seed)
-    reference = normalize_log1p(adata, copy=False)
+    # Training receives a lightweight AnnData whose expression matrix is
+    # shared with the immutable reference. Copying here keeps normalization
+    # inside the common per-run timing boundary without mutating later runs.
+    reference = normalize_log1p(adata, copy=True)
     model = celltypist.train(
         X=reference,
         labels=args.train_celltype,
-        **_training_options(reference, seed),
+        n_jobs=args.n_jobs,
+        random_state=seed,
     )
     if args.save_models:
         model_dir = run_out_path / "_model"
@@ -57,24 +40,61 @@ def train_celltypist(adata, seed, run_out_path, args):
     return model
 
 
-def _annotate_query(query, model, chunk_size=2048):
-    """Run prediction in bounded-memory chunks."""
+PREDICTION_MEMORY_LIMIT_BYTES = 23 * 1024**3
+PREDICTION_MEMORY_RESERVE_BYTES = 2 * 1024**3
+PREDICTION_FALLBACK_CHUNK_SIZE = 2048
+
+
+def _process_rss_bytes():
+    try:
+        for line in Path("/proc/self/status").read_text().splitlines():
+            if line.startswith("VmRSS:"):
+                return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
+def _prediction_chunk_size(query, model):
+    model_features = np.asarray(model.classifier.features, dtype=str)
+    query_features = query.var_names.astype(str).to_numpy()
+    overlap = int(np.isin(query_features, model_features).sum())
+    if overlap == 0:
+        return query.n_obs
+
+    # CellTypist centers and scales the matched sparse expression into dense
+    # float64 working arrays. Allow three such arrays plus a fixed reserve.
+    bytes_per_cell = 3 * overlap * np.dtype(np.float64).itemsize
+    resident = _process_rss_bytes()
+    fixed = resident + PREDICTION_MEMORY_RESERVE_BYTES
+    full_estimate = fixed + query.n_obs * bytes_per_cell
+    if full_estimate <= PREDICTION_MEMORY_LIMIT_BYTES:
+        return query.n_obs
+    if fixed >= PREDICTION_MEMORY_LIMIT_BYTES:
+        return min(query.n_obs, PREDICTION_FALLBACK_CHUNK_SIZE)
+    available = PREDICTION_MEMORY_LIMIT_BYTES - fixed
+    return max(1, min(query.n_obs, available // bytes_per_cell))
+
+
+def _annotate_query(query, model):
+    """Run the official predictor, batching only for the memory limit."""
     if query.n_obs == 0:
         raise ValueError("Query dataset contains no cells")
 
-    if query.n_obs > chunk_size:
-        print(
-            f"[Celltypist] predicting {query.n_obs} cells in chunks of "
-            f"{chunk_size}"
-        )
+    chunk_size = int(_prediction_chunk_size(query, model))
+    if chunk_size >= query.n_obs:
+        result = celltypist.annotate(filename=query, model=model)
+        return result.predicted_labels.copy(), result.probability_matrix.copy()
+
+    print(
+        f"[Celltypist] memory fallback: predicting {query.n_obs} cells "
+        f"in chunks of {chunk_size}"
+    )
 
     predicted_parts = []
     probability_parts = []
     for start in range(0, query.n_obs, chunk_size):
         chunk = query[start : start + chunk_size].copy()
-        if sparse.issparse(chunk.X):
-            chunk.X = chunk.X.toarray()
-
         result = celltypist.annotate(filename=chunk, model=model)
         predicted_parts.append(result.predicted_labels.copy())
         probability_parts.append(result.probability_matrix.copy())

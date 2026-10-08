@@ -11,15 +11,11 @@ For each target cell type (CD4+ T cells, CD14+ Monocytes):
 """
 
 import os
-import sys
 import numpy as np
 import pandas as pd
 import scanpy as sc
 import scipy.sparse as sp
 import matplotlib.pyplot as plt
-
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from utils.dataset import preprocess_adata
 
 # ---- Configuration ----
 DATASET_PATH = "/Group16T/raw_data/scCobra/Immune_ALL_human.h5ad"
@@ -44,6 +40,42 @@ TARGETS = [
 
 os.makedirs(SAVE_DIR, exist_ok=True)
 
+
+def preprocess_perturbation_input(
+    adata,
+    batch_col,
+    min_genes=200,
+    min_cells=3,
+    mt_threshold=5.0,
+    target_sum=1e4,
+    n_top_genes=2000,
+):
+    """Local preprocessing used only to construct perturbation datasets."""
+    adata = adata.copy()
+    if "counts" in adata.layers:
+        adata.X = adata.layers["counts"].copy()
+    else:
+        adata.layers["counts"] = adata.X.copy()
+
+    sc.pp.filter_cells(adata, min_genes=min_genes)
+    sc.pp.filter_genes(adata, min_cells=min_cells)
+    adata.var["mt"] = adata.var_names.str.upper().str.startswith("MT-")
+    sc.pp.calculate_qc_metrics(
+        adata, qc_vars=["mt"], percent_top=None, log1p=False, inplace=True
+    )
+    adata = adata[adata.obs["pct_counts_mt"] < mt_threshold].copy()
+    sc.pp.normalize_total(adata, target_sum=target_sum)
+    sc.pp.log1p(adata)
+    if adata.n_vars > n_top_genes:
+        sc.pp.highly_variable_genes(
+            adata,
+            n_top_genes=n_top_genes,
+            flavor="seurat",
+            batch_key=batch_col,
+        )
+        adata = adata[:, adata.var["highly_variable"]].copy()
+    return adata
+
 # ---- Load raw data ----
 print(f"Loading data from {DATASET_PATH}")
 adata_raw = sc.read_h5ad(DATASET_PATH)
@@ -61,9 +93,7 @@ for target in TARGETS:
 
     # ---- Preprocess ----
     print("Preprocessing...")
-    adata = preprocess_adata(
-        adata_raw.copy(), label_col=CELLTYPE_KEY, batch_col=BATCH_KEY
-    )
+    adata = preprocess_perturbation_input(adata_raw, batch_col=BATCH_KEY)
     print(f"Preprocessed: {adata.shape[0]} cells, {adata.shape[1]} genes")
 
     # ---- Copy target cells and perturb ----

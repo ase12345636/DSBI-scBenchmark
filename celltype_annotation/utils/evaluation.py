@@ -14,6 +14,16 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 
+from utils.broad_evaluation_policy import (
+    POLICY_VERSION,
+    accepted_predictions,
+    compare_predictions,
+    is_evaluable_ground_truth,
+    is_exact_ground_truth,
+    normalize_evaluation_label,
+    normalize_dataset_name,
+)
+
 
 def _clean_labels(values, missing_value="Unknown"):
     labels = pd.Series(values, dtype="string").str.strip()
@@ -72,74 +82,170 @@ def _auc_metrics(y_true, scores, score_classes):
     return auc_macro, auc_weighted, per_class_auc
 
 
+def _project_scores_to_source_labels(y_true, scores, score_classes, dataset):
+    """Aggregate model scores into the source ground-truth ontology.
+
+    Exact source labels keep their own score column.  A coarse source parent
+    receives the sum of every accepted child score (and its own score, if a
+    model happens to emit one).  Labels without any score column are omitted
+    so :func:`_auc_metrics` reports their AUC as unavailable rather than 0.5.
+    """
+    normalized_classes = np.asarray(
+        [
+            normalize_evaluation_label(dataset, label) or str(label)
+            for label in score_classes
+        ],
+        dtype=object,
+    )
+    projected_scores = []
+    projected_classes = []
+    for truth in sorted(set(y_true)):
+        accepted = set(accepted_predictions(dataset, truth))
+        accepted.add(normalize_evaluation_label(dataset, truth) or str(truth))
+        indices = np.flatnonzero(np.isin(normalized_classes, list(accepted)))
+        if not len(indices):
+            continue
+        projected_scores.append(np.asarray(scores[:, indices]).sum(axis=1))
+        projected_classes.append(str(truth))
+
+    if not projected_scores:
+        return np.empty((len(y_true), 0), dtype=float), np.asarray([], dtype=str)
+    return (
+        np.column_stack(projected_scores),
+        np.asarray(projected_classes, dtype=str),
+    )
+
+
+def _averaged_metrics(y_true, y_pred):
+    """Return the common macro/micro/weighted precision, recall and F1 set."""
+    result = {}
+    for average in ("macro", "micro", "weighted"):
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            y_true, y_pred, average=average, zero_division=0
+        )
+        result[f"precision_{average}"] = float(precision)
+        result[f"recall_{average}"] = float(recall)
+        result[f"f1_{average}"] = float(f1)
+    return result
+
+
 def evaluate_predictions(
     adata,
     pred_key,
     celltype_key,
+    dataset_name=None,
     score_key="annotation_scores",
     score_classes_key="annotation_score_classes",
 ):
-    """Evaluate predictions and return overall and per-class metric tables."""
+    """Evaluate predictions in each dataset's source annotation ontology.
+
+    Primary accuracy, precision/recall/F1, AUC, MCC, kappa, per-class metrics
+    and the returned confusion matrix all use source-compatible predictions.
+    If a source label is coarser than the training ontology, an explicitly
+    accepted child prediction is projected back to that source parent before
+    metrics are calculated.  Normalized exact-label equality is retained only
+    in clearly named ``exact_match_*`` audit fields.  CAF has an exact ontology
+    and thus receives no projection or tolerance.
+    """
     if celltype_key not in adata.obs:
         raise KeyError(f"Ground-truth column '{celltype_key}' not found in test data")
     if pred_key not in adata.obs:
         raise KeyError(f"Prediction column '{pred_key}' not found")
 
+    dataset = normalize_dataset_name(dataset_name or "")
     raw_true = pd.Series(adata.obs[celltype_key], index=adata.obs_names, dtype="string")
-    valid = raw_true.notna() & raw_true.str.strip().ne("")
-    if not valid.any():
-        raise ValueError("The test data contains no non-missing ground-truth labels")
+    non_missing = raw_true.notna() & raw_true.str.strip().ne("")
+    evaluable = pd.Series(False, index=adata.obs_names)
+    if non_missing.any():
+        evaluable.loc[non_missing] = raw_true.loc[non_missing].map(
+            lambda value: is_evaluable_ground_truth(dataset, value)
+        )
+    if not evaluable.any():
+        raise ValueError(
+            "The test data contains no ground-truth labels supported by the "
+            f"broad evaluation policy for dataset '{dataset or dataset_name}'"
+        )
 
-    y_true = _clean_labels(raw_true[valid]).to_numpy()
-    y_pred = _clean_labels(adata.obs.loc[valid, pred_key]).to_numpy()
+    comparison = compare_predictions(
+        raw_true.loc[evaluable].to_numpy(),
+        adata.obs.loc[evaluable, pred_key].to_numpy(),
+        dataset,
+    )
+    y_true = comparison["truth"].astype(str)
+    exact_match_pred = comparison["prediction"].astype(str)
+    evaluation_pred = comparison["relaxed_prediction"].astype(str)
     scores, score_classes, auc_source = _extract_scores(
         adata, pred_key, score_key, score_classes_key
     )
-    scores = scores[np.asarray(valid)]
+    scores = scores[np.asarray(evaluable)]
+    evaluation_scores, evaluation_score_classes = _project_scores_to_source_labels(
+        y_true, scores, score_classes, dataset
+    )
 
-    labels = np.asarray(sorted(set(y_true) | set(y_pred)), dtype=str)
-    precision_macro, recall_macro, f1_macro, _ = precision_recall_fscore_support(
-        y_true, y_pred, average="macro", zero_division=0
+    exact_truth = np.asarray(
+        [is_exact_ground_truth(dataset, label) for label in y_true], dtype=bool
     )
-    precision_micro, recall_micro, f1_micro, _ = precision_recall_fscore_support(
-        y_true, y_pred, average="micro", zero_division=0
-    )
-    precision_weighted, recall_weighted, f1_weighted, _ = (
-        precision_recall_fscore_support(
-            y_true, y_pred, average="weighted", zero_division=0
-        )
-    )
+
+    # Persist the primary evaluation projection and the exact-match audit
+    # decision beside each prediction. Unsupported/missing truth remains out.
+    adata.obs["evaluation_included"] = np.asarray(evaluable, dtype=bool)
+    for column, values in (
+        ("evaluation_prediction", evaluation_pred),
+        ("evaluation_correct", comparison["relaxed_correct"]),
+        ("exact_match_correct", comparison["strict_correct"]),
+        ("compatible_correct", comparison["relaxed_correct"]),
+        ("relaxation_rule", comparison["relaxation_rule"]),
+        ("relaxation_level", comparison["relaxation_level"]),
+    ):
+        series = pd.Series(pd.NA, index=adata.obs_names, dtype="object")
+        series.loc[evaluable] = values
+        adata.obs[column] = series
+
+    labels = np.asarray(sorted(set(y_true) | set(evaluation_pred)), dtype=str)
+    primary_averages = _averaged_metrics(y_true, evaluation_pred)
     auc_macro, auc_weighted, per_class_auc = _auc_metrics(
-        y_true, scores, score_classes
+        y_true, evaluation_scores, evaluation_score_classes
     )
 
     overall = {
+        "evaluation_dataset": dataset,
+        "evaluation_policy_version": POLICY_VERSION,
+        "n_total_cells": int(adata.n_obs),
+        "n_missing_ground_truth": int((~non_missing).sum()),
+        "n_unsupported_ground_truth": int(
+            non_missing.sum() - evaluable.sum()
+        ),
         "n_test_cells": int(len(y_true)),
+        "evaluation_coverage": float(evaluable.mean()),
+        "n_exact_ground_truth": int(exact_truth.sum()),
+        "n_coarse_ground_truth": int((~exact_truth).sum()),
         "n_true_classes": int(len(set(y_true))),
-        "n_predicted_classes": int(len(set(y_pred))),
-        "accuracy": float(accuracy_score(y_true, y_pred)),
-        "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
-        "precision_macro": float(precision_macro),
-        "precision_micro": float(precision_micro),
-        "precision_weighted": float(precision_weighted),
-        "recall_macro": float(recall_macro),
-        "recall_micro": float(recall_micro),
-        "recall_weighted": float(recall_weighted),
-        "f1_macro": float(f1_macro),
-        "f1_micro": float(f1_micro),
-        "f1_weighted": float(f1_weighted),
+        "n_predicted_classes": int(len(set(evaluation_pred))),
+        "evaluation_metric_mode": "source_compatible",
+        "accuracy": float(accuracy_score(y_true, evaluation_pred)),
+        "compatible_accuracy": float(np.mean(comparison["relaxed_correct"])),
+        "n_correct": int(np.sum(comparison["relaxed_correct"])),
+        "n_compatible_correct": int(np.sum(comparison["relaxed_correct"])),
+        "balanced_accuracy": float(
+            balanced_accuracy_score(y_true, evaluation_pred)
+        ),
         "auc_ovr_macro": auc_macro,
         "auc_ovr_weighted": auc_weighted,
-        "matthews_corrcoef": float(matthews_corrcoef(y_true, y_pred)),
-        "cohen_kappa": float(cohen_kappa_score(y_true, y_pred)),
-        "unknown_prediction_rate": float(np.mean(y_pred == "Unknown")),
+        "matthews_corrcoef": float(matthews_corrcoef(y_true, evaluation_pred)),
+        "cohen_kappa": float(cohen_kappa_score(y_true, evaluation_pred)),
+        "unknown_prediction_rate": float(np.mean(exact_match_pred == "Unknown")),
         "auc_score_source": auc_source,
+        "exact_match_accuracy": float(
+            accuracy_score(y_true, exact_match_pred)
+        ),
+        "n_exact_match_correct": int(np.sum(comparison["strict_correct"])),
     }
+    overall.update(primary_averages)
 
     precision, recall, f1, support = precision_recall_fscore_support(
-        y_true, y_pred, labels=labels, zero_division=0
+        y_true, evaluation_pred, labels=labels, zero_division=0
     )
-    cm = confusion_matrix(y_true, y_pred, labels=labels)
+    cm = confusion_matrix(y_true, evaluation_pred, labels=labels)
     per_class_rows = []
     for index, label in enumerate(labels):
         tp = cm[index, index]
@@ -159,4 +265,6 @@ def evaluate_predictions(
 
     per_class = pd.DataFrame(per_class_rows)
     confusion = pd.DataFrame(cm, index=labels, columns=labels)
+    confusion.index.name = "ground_truth"
+    confusion.columns.name = "evaluation_prediction"
     return overall, per_class, confusion
