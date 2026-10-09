@@ -202,11 +202,9 @@ if conda activate scGPT; then
     if [[ -z "$scgpt_model_dir" ]]; then
         scgpt_model_dir="scGPT/models/scGPT_human"
     fi
-    if [[ ! -f "$scgpt_model_dir/best_model.pt" || \
-          ! -f "$scgpt_model_dir/vocab.json" || \
-          ! -f "$scgpt_model_dir/args.json" ]]; then
-        echo "Error: scGPT checkpoint is incomplete: $scgpt_model_dir" >&2
-        echo "Run scGPT/download_checkpoint.py explicitly before retrying." >&2
+    if ! python3 scGPT/download_checkpoint.py \
+        --output_dir "$scgpt_model_dir"; then
+        echo "Error: scGPT checkpoint download or validation failed." >&2
         failed_methods+=("scGPT(checkpoint)")
     else
         run_method "scGPT" "scGPT/scGPT.py" \

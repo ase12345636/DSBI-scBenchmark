@@ -180,7 +180,8 @@ checkpoint by exact tensor equality; unknown or non-classifier shape mismatches
 abort the run instead of silently leaving encoder weights uninitialized.
 
 This benchmark uses the official `whole-human` checkpoint recommended by the
-scGPT project. Download it once with:
+scGPT project. `run_script.sh` downloads it automatically when it is missing or
+invalid. It can also be downloaded explicitly with:
 
 ```bash
 conda activate scGPT
@@ -197,10 +198,10 @@ scGPT/models/scGPT_human/
 └── vocab.json
 ```
 
-`run_script.sh` runs scGPT as part of the standard benchmark and performs the
-same check. It reports a failed method instead of downloading during a formal
-run when these files are absent. A different checkpoint can be passed with
-`--scgpt_model_dir`.
+Before running scGPT, `run_script.sh` validates the JSON files and the PyTorch
+archive. A missing or invalid checkpoint is downloaded to a temporary sibling
+directory, fully loaded for validation, and only then published to the model
+directory. A different checkpoint can be passed with `--scgpt_model_dir`.
 
 ## Run all methods
 
