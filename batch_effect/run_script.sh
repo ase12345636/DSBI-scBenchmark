@@ -79,14 +79,6 @@ python3 scVi/scVi.py \
     --celltype_key "$celltype_key" \
     --run_times "$n_runs"
 
-# echo "Running scANVI batch correction"
-# python3 scANVI/scANVI.py \
-#     --dataset_path "$dataset_path" \
-#     --save_path "$save_path" \
-#     --batch_key "$batch_key" \
-#     --celltype_key "$celltype_key" \
-#     --run_times "$n_runs"
-
 echo "Running Scanorama batch correction"
 python3 Scanorama/Scanorama.py \
     --dataset_path "$dataset_path" \
@@ -95,12 +87,22 @@ python3 Scanorama/Scanorama.py \
     --celltype_key "$celltype_key" \
     --run_times "$n_runs"
 
+echo "Running Seurat batch correction"
 python3 Seurat/Seurat.py \
     --dataset_path "$dataset_path" \
     --save_path "$save_path" \
     --batch_key "$batch_key" \
     --celltype_key "$celltype_key" \
     --run_times "$n_runs"
+
+# echo "Running scANVI batch correction"
+# python3 scANVI/scANVI.py \
+#     --dataset_path "$dataset_path" \
+#     --save_path "$save_path" \
+#     --batch_key "$batch_key" \
+#     --celltype_key "$celltype_key" \
+#     --run_times "$n_runs"
+
 
 # echo "Running scCM batch correction"
 # python3 scCM/sccm.py \

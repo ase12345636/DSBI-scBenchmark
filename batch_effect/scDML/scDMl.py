@@ -78,10 +78,11 @@ def integrate_scdml(adata, seed, run_out_path, args):
     adata_scdml.obs[args.batch_key] = adata_scdml.obs[batch_key].copy()
     del adata_scdml.obs[obs_name_key]
 
-    # Omit ncluster_list and expect_num_cluster so scDML uses [3] and None.
     model.integrate(
         adata_scdml,
         batch_key=batch_key,
+        ncluster_list=[15],
+        expect_num_cluster=15,
         seed=seed,
     )
     del adata_scdml.obs[batch_key]
