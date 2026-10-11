@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# bash run_script.sh \
+#     --dataset_path /Group16T/raw_data/scCobra/Immune_ALL_human.h5ad \
+#     --save_path /Group16T/common/ccuc/scQuartz/result/immune \
+#     --batch_key batch \
+#     --celltype_key final_annotation \
+#     --n_runs 30
+
+# bash run_script.sh \
+#     --dataset_path /Group16T/raw_data/scCobra/Lung_atlas_public.h5ad \
+#     --save_path /Group16T/common/ccuc/scQuartz/result/lung \
+#     --batch_key batch \
+#     --celltype_key cell_type \
+#     --n_runs 30
+
+bash run_script.sh \
+    --dataset_path /Group16T/raw_data/scCobra/human_pancreas_norm_complexBatch.h5ad \
+    --save_path /Group16T/common/ccuc/scQuartz/result/pancreas \
+    --batch_key tech \
+    --celltype_key celltype \
+    --n_runs 30
+
+# bash run_script.sh \
+#     --dataset_path /Group16T/common/ccuc/scQuartz/data/SubMouseBrain_raw.h5ad \
+#     --save_path /Group16T/common/ccuc/scQuartz/result/brain \
+#     --batch_key BATCH \
+#     --celltype_key celltype \
+#     --n_runs 30

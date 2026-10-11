@@ -12,9 +12,6 @@ def preprocess_raw_baseline(
     adata,
     label_col,
     batch_col,
-    min_genes=200,
-    min_cells=3,
-    mt_threshold=5.0,
     target_sum=1e4,
     n_top_genes=2000,
 ):
@@ -41,13 +38,6 @@ def preprocess_raw_baseline(
             )
         ad_raw.layers["counts"] = ad_raw.X.copy()
 
-    sc.pp.filter_cells(ad_raw, min_genes=min_genes)
-    sc.pp.filter_genes(ad_raw, min_cells=min_cells)
-    ad_raw.var["mt"] = ad_raw.var_names.str.upper().str.startswith("MT-")
-    sc.pp.calculate_qc_metrics(
-        ad_raw, qc_vars=["mt"], percent_top=None, log1p=False, inplace=True
-    )
-    ad_raw = ad_raw[ad_raw.obs["pct_counts_mt"] < mt_threshold].copy()
     sc.pp.normalize_total(ad_raw, target_sum=target_sum)
     sc.pp.log1p(ad_raw)
     if ad_raw.n_vars > n_top_genes:

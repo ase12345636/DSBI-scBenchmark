@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 from scipy.io import mmwrite
 from scipy.sparse import issparse, csc_matrix
 
+from utils.dataset import quality_control
 from utils.evaluation import evaluate_embedding_scib
 from utils.function import find_best_leiden_resolution, MemoryTracker
 
@@ -291,6 +292,7 @@ def run_integration_pipeline(tool_name, integrate_fn, embed_key, args,
     pending_text = ", ".join(map(str, pending_run_ids))
     print(f"Resume: pending {tool_name} runs: {pending_text}")
     adata_raw = load_dataset(args.dataset_path)
+    adata_raw = quality_control(adata_raw)
     # Preprocessing is deterministic and independent of the model seed. Build
     # one template before the run loop, then copy only the smaller preprocessed
     # object for each run. The preprocessing work finishes before timing and

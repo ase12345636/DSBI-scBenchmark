@@ -18,12 +18,12 @@ bash run_script.sh \
     --celltype_key cell_type \
     --n_runs 30
 
-bash run_script.sh \
-    --dataset_path /Group16T/raw_data/scCobra/human_pancreas_norm_complexBatch.h5ad \
-    --save_path /Group16T/common/ccuc/scQuartz/result/pancreas \
-    --batch_key tech \
-    --celltype_key celltype \
-    --n_runs 30
+# bash run_script.sh \
+#     --dataset_path /Group16T/raw_data/scCobra/human_pancreas_norm_complexBatch.h5ad \
+#     --save_path /Group16T/common/ccuc/scQuartz/result/pancreas \
+#     --batch_key tech \
+#     --celltype_key celltype \
+#     --n_runs 30
 
 bash run_script.sh \
     --dataset_path /Group16T/common/ccuc/scQuartz/data/SubMouseBrain_raw.h5ad \
