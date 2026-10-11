@@ -62,6 +62,7 @@ def preprocess_harmony(
         ad_harmony = ad_harmony[
             :, ad_harmony.var_names.isin(hvg_union)
         ].copy()
+    ad_harmony.var["highly_variable"] = True
     sc.pp.scale(ad_harmony, max_value=10)
     sc.tl.pca(
         ad_harmony,

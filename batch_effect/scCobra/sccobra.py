@@ -41,13 +41,6 @@ def preprocess_sccobra(adata, label_col, batch_col):
 
     # Native RNA defaults remove mitochondrial/ERCC features rather than using
     # a mitochondrial-percentage cell filter.
-    keep_genes = ~adata.var_names.astype(str).str.startswith(
-        ("ERCC", "MT-", "mt-")
-    )
-    adata = adata[:, keep_genes].copy()
-    sc.pp.filter_cells(adata, min_genes=600)
-    sc.pp.filter_genes(adata, min_cells=3)
-
     sc.pp.normalize_total(adata, target_sum=10_000)
     sc.pp.log1p(adata)
     adata.raw = adata

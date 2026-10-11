@@ -23,22 +23,6 @@ def preprocess_sccm(adata, label_col, batch_col):
     del label_col, batch_col  # scCM selects HVGs globally, not per batch.
     adata = _copy_source_expression(adata)
 
-    adata.var["mt"] = adata.var_names.str.upper().str.startswith("MT-")
-    sc.pp.calculate_qc_metrics(
-        adata,
-        qc_vars=["mt"],
-        percent_top=None,
-        log1p=False,
-        inplace=True,
-    )
-
-    # The paper excludes cells with fewer than 300 or more than 6,000
-    # detected features and cells above 15% mitochondrial expression.
-    keep_cells = (
-        adata.obs["n_genes_by_counts"].between(300, 6_000, inclusive="both")
-        & (adata.obs["pct_counts_mt"] <= 15.0)
-    )
-    adata = adata[keep_cells].copy()
 
     sc.pp.normalize_total(adata, target_sum=10_000)
     sc.pp.log1p(adata)
@@ -51,11 +35,6 @@ def preprocess_sccm(adata, label_col, batch_col):
     )
     adata = adata[:, adata.var["highly_variable"]].copy()
 
-    print(
-        "scCM preprocessing: "
-        f"{adata.n_obs} cells, {adata.n_vars} genes "
-        "(300-6000 features, <=15% MT, 3000 HVGs)"
-    )
     return adata
 
 
