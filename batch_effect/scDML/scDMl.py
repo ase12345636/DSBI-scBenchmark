@@ -1,5 +1,6 @@
 import os
 import sys
+import logging
 import numpy as np
 import scipy.sparse as sp
 from scDML import scDMLModel
@@ -55,7 +56,6 @@ def _unused_obs_key(adata, stem):
 
 def integrate_scdml(adata, seed, run_out_path, args):
     """Run scDML with its native preprocessing and integration defaults."""
-    del run_out_path
 
     # scDML's Normalization helper reserves an obs column literally named
     # ``batch``.  A temporary alias prevents it from overwriting datasets whose
@@ -65,28 +65,40 @@ def integrate_scdml(adata, seed, run_out_path, args):
     adata.obs[batch_key] = adata.obs[args.batch_key].copy()
     adata.obs[obs_name_key] = adata.obs_names.astype(str)
 
-    model = scDMLModel()
+    root_logger = logging.getLogger()
+    existing_handlers = set(root_logger.handlers)
+    model = scDMLModel(save_dir=run_out_path)
+    model_handlers = [
+        handler
+        for handler in root_logger.handlers
+        if handler not in existing_handlers
+    ]
 
-    # Leave every algorithmic argument at the installed scDML defaults:
-    # 1,000 HVGs, per-batch z-score scaling, 100 PCs, and Louvain resolution 3.
-    adata_scdml = model.preprocess(adata, batch_key=batch_key)
+    try:
+        # Leave every algorithmic argument at the installed scDML defaults:
+        # 1,000 HVGs, per-batch z-score scaling, 100 PCs, and Louvain resolution 3.
+        adata_scdml = model.preprocess(adata, batch_key=batch_key)
 
-    # AnnData.concatenate(), used inside scDML for per-batch scaling, appends
-    # suffixes to cell IDs.  Restore stable IDs so pre/post benchmark metrics
-    # can align the same cells.
-    adata_scdml.obs_names = adata_scdml.obs[obs_name_key].astype(str).to_numpy()
-    adata_scdml.obs[args.batch_key] = adata_scdml.obs[batch_key].copy()
-    del adata_scdml.obs[obs_name_key]
+        # AnnData.concatenate(), used inside scDML for per-batch scaling,
+        # appends suffixes to cell IDs. Restore stable IDs so pre/post benchmark
+        # metrics can align the same cells.
+        adata_scdml.obs_names = adata_scdml.obs[obs_name_key].astype(str).to_numpy()
+        adata_scdml.obs[args.batch_key] = adata_scdml.obs[batch_key].copy()
+        del adata_scdml.obs[obs_name_key]
 
-    model.integrate(
-        adata_scdml,
-        batch_key=batch_key,
-        ncluster_list=[15],
-        expect_num_cluster=15,
-        seed=seed,
-    )
-    del adata_scdml.obs[batch_key]
-    return adata_scdml
+        model.integrate(
+            adata_scdml,
+            batch_key=batch_key,
+            ncluster_list=[15],
+            expect_num_cluster=15,
+            seed=seed,
+        )
+        del adata_scdml.obs[batch_key]
+        return adata_scdml
+    finally:
+        for handler in model_handlers:
+            root_logger.removeHandler(handler)
+            handler.close()
 
 
 if __name__ == '__main__':

@@ -95,6 +95,7 @@ echo "Celltype key: $celltype_key"
 #     --celltype_key "$celltype_key" \
 #     --run_times "$n_runs"
 
+# conda activate Seurat
 # python3 Seurat/Seurat.py \
 #     --dataset_path "$dataset_path" \
 #     --save_path "$save_path" \

@@ -9,4 +9,4 @@ bash run_script.sh \
     --save_path /Group16T/common/ccuc/scQuartz/result/immune_celltypist \
     --batch_key batch \
     --celltype_key celltypist_label \
-    --n_runs 30
+    --n_runs 5

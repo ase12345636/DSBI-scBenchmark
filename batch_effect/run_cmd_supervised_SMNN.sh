@@ -6,21 +6,21 @@ cd "$SCRIPT_DIR"
 
 bash run_script_supervised_SMNN.sh \
     --dataset_path /Group16T/raw_data/scCobra/Immune_ALL_human.h5ad \
-    --save_path /Group16T/common/ccuc/scSCI/result/immune \
+    --save_path /Group16T/common/ccuc/scQuartz/result/immune \
     --batch_key batch \
     --celltype_key final_annotation \
-    --n_runs 30
+    --n_runs 5
 
 bash run_script_supervised_SMNN.sh \
     --dataset_path /Group16T/raw_data/scCobra/Lung_atlas_public.h5ad \
-    --save_path /Group16T/common/ccuc/scSCI/result/lung \
+    --save_path /Group16T/common/ccuc/scQuartz/result/lung \
     --batch_key batch \
     --celltype_key cell_type \
-    --n_runs 30
+    --n_runs 5
 
 bash run_script_supervised_SMNN.sh \
     --dataset_path /Group16T/raw_data/scCobra/human_pancreas_norm_complexBatch.h5ad \
-    --save_path /Group16T/common/ccuc/scSCI/result/pancreas \
+    --save_path /Group16T/common/ccuc/scQuartz/result/pancreas \
     --batch_key tech \
     --celltype_key celltype \
-    --n_runs 30
+    --n_runs 5

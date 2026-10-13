@@ -2,10 +2,24 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 import os
-import subprocess
+import ctypes
 import threading
 import time as time_module
 from sklearn.metrics import normalized_mutual_info_score
+
+
+_NVML_SUCCESS = 0
+_NVML_ERROR_INSUFFICIENT_SIZE = 7
+_NVML_VALUE_NOT_AVAILABLE = ctypes.c_ulonglong(-1).value
+
+
+class _NvmlProcessInfo(ctypes.Structure):
+    _fields_ = [
+        ("pid", ctypes.c_uint),
+        ("usedGpuMemory", ctypes.c_ulonglong),
+        ("gpuInstanceId", ctypes.c_uint),
+        ("computeInstanceId", ctypes.c_uint),
+    ]
 
 
 class MemoryTracker:
@@ -26,7 +40,7 @@ class MemoryTracker:
         Parameters
         ----------
         track_gpu : bool
-            Whether to track GPU memory using nvidia-smi.
+            Whether to track GPU memory using NVML.
         track_children : bool
             Whether to track memory of child processes (default True).
         sample_interval : float
@@ -44,6 +58,69 @@ class MemoryTracker:
         self._cached_pids = None
         self._cache_time = 0
         self._cache_duration = 10.0  # Cache process tree for 10 seconds
+        self._nvml = None
+        self._nvml_initialized = False
+        self._nvml_device_handles = []
+
+    def _init_nvml(self):
+        """Initialize NVML once, before numerical worker threads start."""
+        if not self.track_gpu:
+            return
+
+        try:
+            nvml = ctypes.CDLL("libnvidia-ml.so.1")
+            nvml.nvmlInit_v2.argtypes = []
+            nvml.nvmlInit_v2.restype = ctypes.c_int
+            nvml.nvmlShutdown.argtypes = []
+            nvml.nvmlShutdown.restype = ctypes.c_int
+            nvml.nvmlDeviceGetCount_v2.argtypes = [
+                ctypes.POINTER(ctypes.c_uint)
+            ]
+            nvml.nvmlDeviceGetCount_v2.restype = ctypes.c_int
+            nvml.nvmlDeviceGetHandleByIndex_v2.argtypes = [
+                ctypes.c_uint,
+                ctypes.POINTER(ctypes.c_void_p),
+            ]
+            nvml.nvmlDeviceGetHandleByIndex_v2.restype = ctypes.c_int
+            nvml.nvmlDeviceGetComputeRunningProcesses_v2.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_uint),
+                ctypes.POINTER(_NvmlProcessInfo),
+            ]
+            nvml.nvmlDeviceGetComputeRunningProcesses_v2.restype = ctypes.c_int
+        except (OSError, AttributeError):
+            return
+
+        if nvml.nvmlInit_v2() != _NVML_SUCCESS:
+            return
+
+        self._nvml = nvml
+        self._nvml_initialized = True
+
+        device_count = ctypes.c_uint(0)
+        if nvml.nvmlDeviceGetCount_v2(
+            ctypes.byref(device_count)
+        ) != _NVML_SUCCESS:
+            self._shutdown_nvml()
+            return
+
+        for device_index in range(device_count.value):
+            device_handle = ctypes.c_void_p()
+            if nvml.nvmlDeviceGetHandleByIndex_v2(
+                device_index, ctypes.byref(device_handle)
+            ) == _NVML_SUCCESS:
+                self._nvml_device_handles.append(device_handle)
+
+    def _shutdown_nvml(self):
+        """Release the NVML handle after the final sample."""
+        if self._nvml_initialized and self._nvml is not None:
+            try:
+                self._nvml.nvmlShutdown()
+            except (OSError, AttributeError):
+                pass
+        self._nvml = None
+        self._nvml_initialized = False
+        self._nvml_device_handles = []
     
     def _get_process_tree_pids(self):
         """Get all PIDs in process tree with caching."""
@@ -101,30 +178,56 @@ class MemoryTracker:
         return total_kb / 1024.0
     
     def _get_vram_mb(self, pids):
-        """Get total VRAM in MB for all PIDs using nvidia-smi."""
-        if not self.track_gpu:
+        """Get total VRAM in MiB for all PIDs directly through NVML."""
+        if not self.track_gpu or not self._nvml_initialized:
             return None
-        
-        cmd = ["nvidia-smi", "--query-compute-apps=pid,used_memory", 
-               "--format=csv,noheader,nounits"]
-        try:
-            output = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL)
-        except (OSError, subprocess.CalledProcessError, FileNotFoundError):
+
+        total_bytes = 0
+        queried_device = False
+        query_fn = self._nvml.nvmlDeviceGetComputeRunningProcesses_v2
+
+        for device_handle in self._nvml_device_handles:
+            process_count = ctypes.c_uint(0)
+            result = query_fn(
+                device_handle, ctypes.byref(process_count), None
+            )
+            if result == _NVML_SUCCESS:
+                queried_device = True
+                continue
+            if result != _NVML_ERROR_INSUFFICIENT_SIZE:
+                continue
+
+            # The process list can grow between the size and data queries.
+            # Leave a small margin and retry if NVML reports another resize.
+            for _ in range(3):
+                capacity = max(process_count.value + 8, 16)
+                process_array = (_NvmlProcessInfo * capacity)()
+                returned_count = ctypes.c_uint(capacity)
+                result = query_fn(
+                    device_handle,
+                    ctypes.byref(returned_count),
+                    process_array,
+                )
+                if result == _NVML_ERROR_INSUFFICIENT_SIZE:
+                    process_count = returned_count
+                    continue
+                if result != _NVML_SUCCESS:
+                    break
+
+                queried_device = True
+                for index in range(returned_count.value):
+                    process_info = process_array[index]
+                    if (
+                        process_info.pid in pids
+                        and process_info.usedGpuMemory
+                        != _NVML_VALUE_NOT_AVAILABLE
+                    ):
+                        total_bytes += process_info.usedGpuMemory
+                break
+
+        if not queried_device:
             return None
-        
-        total_mb = 0.0
-        for line in output.strip().splitlines():
-            parts = [p.strip() for p in line.split(",")]
-            if len(parts) != 2:
-                continue
-            try:
-                pid = int(parts[0])
-                used_mb = float(parts[1])
-                if pid in pids:
-                    total_mb += used_mb
-            except ValueError:
-                continue
-        return total_mb
+        return total_bytes / (1024.0 * 1024.0)
     
     def _monitor_loop(self):
         """Background monitoring loop."""
@@ -151,6 +254,8 @@ class MemoryTracker:
         self._ram_samples = []
         self._vram_samples = []
         self._cached_pids = None
+        self._shutdown_nvml()
+        self._init_nvml()
         
         # Record baseline
         pids = self._get_process_tree_pids()
@@ -209,6 +314,7 @@ class MemoryTracker:
         used_vram = max(0, current_vram - self._vram_baseline)
         
         self._started = False
+        self._shutdown_nvml()
         
         return {
             'peak_ram_mb': round(peak_ram, 2),
