@@ -131,6 +131,15 @@ python3 scDML/scDMl.py \
     --celltype_key "$celltype_key" \
     --run_times "$n_runs"
 
+# conda activate scDML
+# echo "Running scDML-cluster batch correction"
+# python3 scDML-cluster/scDMl.py \
+#     --dataset_path "$dataset_path" \
+#     --save_path "$save_path" \
+#     --batch_key "$batch_key" \
+#     --celltype_key "$celltype_key" \
+#     --run_times "$n_runs"
+
 # conda activate SMNN
 # echo "Running SMNN supervised batch correction"
 # python3 SMNN/SMNN.py \
