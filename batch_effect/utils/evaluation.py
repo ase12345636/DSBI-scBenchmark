@@ -15,7 +15,6 @@ from sklearn.metrics import (
     f1_score,
     normalized_mutual_info_score,
     silhouette_samples,
-    silhouette_score,
 )
 from sklearn.neighbors import NearestNeighbors
 
@@ -39,7 +38,6 @@ SCIB_METRIC_KEYS = [
     "trajectory",
     "morans_i",
 ]
-
 
 class RootCellError(Exception):
     pass
@@ -188,14 +186,46 @@ def cluster_optimal_resolution(
     return res_max, score_max
 
 
-def silhouette_label(adata, label_key, embed, metric="euclidean", scale=True):
+def _label_silhouette_samples(
+    adata,
+    label_key,
+    embed,
+    metric="euclidean",
+    cache=None,
+):
+    cache_key = (id(adata), label_key, embed, metric)
+    if cache is not None and cache_key in cache:
+        return cache[cache_key]
+
+    values = silhouette_samples(
+        adata.obsm[embed],
+        adata.obs[label_key],
+        metric=metric,
+    )
+    if cache is not None:
+        cache[cache_key] = values
+    return values
+
+
+def silhouette_label(
+    adata,
+    label_key,
+    embed,
+    metric="euclidean",
+    scale=True,
+    silhouette_cache=None,
+):
     if embed not in adata.obsm.keys():
         raise KeyError(f"{embed} not in obsm")
 
-    asw = silhouette_score(
-        X=adata.obsm[embed],
-        labels=adata.obs[label_key],
-        metric=metric,
+    asw = np.mean(
+        _label_silhouette_samples(
+            adata,
+            label_key=label_key,
+            embed=embed,
+            metric=metric,
+            cache=silhouette_cache,
+        )
     )
     if scale:
         asw = (asw + 1.0) / 2.0
@@ -358,8 +388,9 @@ def score_isolated_label(
     resolutions=None,
     scale=True,
     verbose=False,
+    copy_adata=True,
 ):
-    adata_local = adata.copy()
+    adata_local = adata.copy() if copy_adata else adata
 
     if cluster:
         def max_f1(adata_tmp, cluster_key, label_key, label, argmax=False):
@@ -427,6 +458,7 @@ def isolated_labels_metric(
     scale=True,
     return_all=False,
     verbose=True,
+    silhouette_cache=None,
 ):
     isolated = get_isolated_labels(
         adata,
@@ -439,9 +471,12 @@ def isolated_labels_metric(
     scores = {}
     adata_local = adata.copy()
     if not cluster:
-        adata_local.obs["silhouette_temp"] = silhouette_samples(
-            adata_local.obsm[embed],
-            adata_local.obs[label_key],
+        adata_local.obs["silhouette_temp"] = _label_silhouette_samples(
+            adata,
+            label_key=label_key,
+            embed=embed,
+            metric="euclidean",
+            cache=silhouette_cache,
         )
 
     for label in isolated:
@@ -455,6 +490,7 @@ def isolated_labels_metric(
             resolutions=resolutions,
             scale=scale,
             verbose=verbose,
+            copy_adata=False,
         )
 
     scores = pd.Series(scores)
@@ -976,6 +1012,86 @@ def hvg_batch(
     return adata_hvg[:, hvg].copy()
 
 
+def prepare_evaluation_reference(
+    adata_obj,
+    already_preprocessed=False,
+    n_pcs=50,
+):
+    """Build the common unintegrated reference used by evaluation metrics."""
+    _check_adata(adata_obj)
+
+    reference = ad.AnnData(
+        X=adata_obj.X.copy(),
+        obs=adata_obj.obs.copy(),
+        var=pd.DataFrame(index=adata_obj.var_names.copy()),
+    )
+    reference.obs_names_make_unique()
+
+    if not already_preprocessed:
+        sc.pp.normalize_total(reference, target_sum=1e4)
+        sc.pp.log1p(reference)
+
+    max_pcs = min(reference.n_obs, reference.n_vars) - 1
+    if max_pcs > 0:
+        sc.tl.pca(
+            reference,
+            n_comps=min(n_pcs, max_pcs),
+            use_highly_variable=False,
+            svd_solver="arpack",
+            random_state=0,
+        )
+
+    return reference
+
+
+def prepare_moran_reference(
+    adata_obj,
+    batch_key,
+    hvg_path=None,
+    n_hvg=100,
+):
+    """Select Moran genes from the common preprocessed evaluation reference."""
+    _check_adata(adata_obj)
+    _check_batch(batch_key, adata_obj.obs)
+
+    reference = ad.AnnData(
+        X=adata_obj.X.copy(),
+        obs=adata_obj.obs[[batch_key]].copy(),
+        var=pd.DataFrame(index=adata_obj.var_names.copy()),
+    )
+    reference.obs_names_make_unique()
+
+    hvg_file = Path(hvg_path) if hvg_path is not None else None
+    if hvg_file is not None and hvg_file.exists():
+        hvg_table = pd.read_csv(hvg_file)
+        if "gene" not in hvg_table.columns:
+            raise ValueError(f"Missing 'gene' column in {hvg_file}")
+        hvgs = hvg_table["gene"].astype(str).tolist()
+    else:
+        hvgs = hvg_batch(
+            reference,
+            batch_key=batch_key,
+            target_genes=n_hvg,
+            flavor="cell_ranger",
+        )
+        if hvg_file is not None:
+            temporary_path = Path(f"{hvg_file}.tmp")
+            pd.DataFrame({"gene": hvgs}).to_csv(temporary_path, index=False)
+            temporary_path.replace(hvg_file)
+
+    if len(hvgs) != n_hvg or len(set(hvgs)) != len(hvgs):
+        raise ValueError(
+            f"Moran reference must contain exactly {n_hvg} unique genes"
+        )
+    missing = [gene for gene in hvgs if gene not in reference.var_names]
+    if missing:
+        raise ValueError(
+            f"Moran reference genes are missing from the dataset: {missing[:5]}"
+        )
+
+    return reference[:, hvgs].copy()
+
+
 # ============================================================
 # Moran's I
 # ============================================================
@@ -988,6 +1104,28 @@ def _check_sanity(adata_obj, batch, hvg):
             raise TypeError("HVG list is not a list")
         if not all(g in adata_obj.var.index for g in hvg):
             raise ValueError("Not all HVGs are in the adata object")
+
+
+def _morans_i_fallback(adata_obj, hvgs):
+    """Scanpy-compatible Moran's I for environments without ``sc.metrics``."""
+    if hasattr(adata_obj, "obsp") and "connectivities" in adata_obj.obsp:
+        graph = adata_obj.obsp["connectivities"]
+    elif "neighbors" in adata_obj.uns and "connectivities" in adata_obj.uns["neighbors"]:
+        graph = adata_obj.uns["neighbors"]["connectivities"]
+    else:
+        raise ValueError("Must run neighbors before Moran's I")
+    graph = graph.astype(np.float64, copy=False)
+
+    values = adata_obj[:, hvgs].X
+    if issparse(values):
+        values = values.toarray()
+    values = np.asarray(values, dtype=np.float64)
+    centered = values - values.mean(axis=0, keepdims=True)
+
+    weight_sum = float(graph.sum())
+    denominator = np.sum(centered * centered, axis=0)
+    numerator = np.sum(centered * (graph @ centered), axis=0)
+    return adata_obj.n_obs / weight_sum * numerator / denominator
 
 
 def morans_i_score(adata_obj, hvgs):
@@ -1004,7 +1142,10 @@ def morans_i_score(adata_obj, hvgs):
         adata_obj.var["morans_i"] = np.nan
         return
 
-    morans = sc.metrics.morans_i(adata_obj[:, hvgs_used])
+    if hasattr(sc, "metrics") and hasattr(sc.metrics, "morans_i"):
+        morans = sc.metrics.morans_i(adata_obj[:, hvgs_used])
+    else:
+        morans = _morans_i_fallback(adata_obj, hvgs_used)
     morans = pd.Series(morans, index=hvgs_used)
 
     if not morans.between(-1, 1).all():
@@ -1022,25 +1163,53 @@ def morans_i(
     embed="X_pca",
     compare_pre=False,
     hvgs=None,
+    reference=None,
 ):
-    _check_sanity(adata_pre, batch_key, hvgs)
-    _check_sanity(adata_post, batch_key, hvgs)
+    if reference is None:
+        _check_sanity(adata_pre, batch_key, hvgs)
+        _check_sanity(adata_post, batch_key, hvgs)
 
-    adata_post_local = adata_post.copy()
-    _restore_scquartz_log_expression(adata_post_local)
-    sc.pp.neighbors(adata_post_local, use_rep=embed)
+        adata_post_local = adata_post.copy()
+        _restore_scquartz_log_expression(adata_post_local)
 
-    adata_pre_local = adata_pre.copy()
-    _restore_scquartz_log_expression(adata_pre_local)
-    _ensure_category(adata_pre_local, batch_key)
+        adata_pre_local = adata_pre.copy()
+        _restore_scquartz_log_expression(adata_pre_local)
+        _ensure_category(adata_pre_local, batch_key)
 
-    if hvgs is None:
-        hvgs = hvg_batch(
-            adata_pre_local,
-            batch_key=batch_key,
-            target_genes=n_hvg,
-            flavor="cell_ranger",
+        if hvgs is None:
+            hvgs = hvg_batch(
+                adata_pre_local,
+                batch_key=batch_key,
+                target_genes=n_hvg,
+                flavor="cell_ranger",
+            )
+    else:
+        reference_hvgs = list(reference.var_names) if hvgs is None else hvgs
+        _check_sanity(reference, batch_key, reference_hvgs)
+        _check_adata(adata_post)
+        if embed not in adata_post.obsm:
+            raise KeyError(f"{embed} not in obsm")
+
+        common = reference.obs_names[reference.obs_names.isin(adata_post.obs_names)]
+        if len(common) == 0:
+            raise ValueError("No common cells between Moran reference and post AnnData")
+
+        post_index = adata_post.obs_names.get_indexer(common)
+        if np.any(post_index < 0):
+            raise ValueError("Could not align Moran reference cells to post AnnData")
+
+        embedding = adata_post.obsm[embed]
+        aligned_embedding = (
+            embedding.iloc[post_index].to_numpy()
+            if isinstance(embedding, pd.DataFrame)
+            else embedding[post_index].copy()
         )
+        adata_post_local = reference[common].copy()
+        adata_post_local.obsm[embed] = aligned_embedding
+        adata_pre_local = adata_post_local.copy()
+        hvgs = reference_hvgs
+
+    sc.pp.neighbors(adata_post_local, use_rep=embed)
 
     morans_i_score(adata_post_local, hvgs)
     score = adata_post_local.var["morans_i"].mean()
@@ -1331,15 +1500,24 @@ def kBET(
 # Graph-LISI (local implementation)
 # ============================================================
 
-def recompute_knn(adata, type_, use_rep="X_emb"):
+def recompute_knn(adata, type_, use_rep="X_emb", graph_cache=None):
+    cache_key = ("knn", id(adata), type_, use_rep)
+    if graph_cache is not None and cache_key in graph_cache:
+        return graph_cache[cache_key]
+
     if type_ == "embed":
-        return sc.pp.neighbors(adata, n_neighbors=15, use_rep=use_rep, copy=True)
-    if type_ == "full":
+        result = sc.pp.neighbors(adata, n_neighbors=15, use_rep=use_rep, copy=True)
+    elif type_ == "full":
         adata_tmp = adata.copy()
         if "X_pca" not in adata_tmp.obsm.keys():
             sc.pp.pca(adata_tmp, svd_solver="arpack")
-        return sc.pp.neighbors(adata_tmp, n_neighbors=15, copy=True)
-    return adata.copy()
+        result = sc.pp.neighbors(adata_tmp, n_neighbors=15, copy=True)
+    else:
+        result = adata.copy()
+
+    if graph_cache is not None:
+        graph_cache[cache_key] = result
+    return result
 
 
 def _hbeta(dist_row, beta):
@@ -1412,15 +1590,21 @@ def _compute_simpson_index_graph(
     perplexity=30,
     subset_idx=None,
     tol=1e-5,
+    graph_neighbors=None,
 ):
     if subset_idx is None:
         subset_idx = np.arange(connectivities.shape[0])
 
+    if graph_neighbors is None:
+        graph_neighbors = [
+            _topk_shortest_path_neighbors(connectivities, int(cell_id), n_neighbors)
+            for cell_id in subset_idx
+        ]
+
     simpson = np.zeros(len(subset_idx), dtype=float)
     logU = np.log(perplexity)
 
-    for i, cell_id in enumerate(subset_idx):
-        knn_idx, distances = _topk_shortest_path_neighbors(connectivities, int(cell_id), n_neighbors)
+    for i, (knn_idx, distances) in enumerate(graph_neighbors):
 
         if len(knn_idx) < n_neighbors:
             simpson[i] = 1.0
@@ -1471,15 +1655,17 @@ def lisi_graph_py(
     perplexity=None,
     subsample=None,
     verbose=False,
+    graph_cache=None,
 ):
     if "neighbors" not in adata.uns:
         raise AttributeError("Key 'neighbors' not found. Please compute a kNN graph first")
 
-    adata_local = adata.copy()
-    _ensure_category(adata_local, obs_key)
+    labels = adata.obs[obs_key]
+    if not pd.api.types.is_categorical_dtype(labels):
+        labels = labels.astype("category")
 
-    batch_labels = adata_local.obs[obs_key].cat.codes.values
-    n_batches = adata_local.obs[obs_key].nunique()
+    batch_labels = labels.cat.codes.values
+    n_batches = labels.nunique()
 
     if perplexity is None or perplexity >= n_neighbors:
         perplexity = int(np.floor(n_neighbors / 3))
@@ -1489,7 +1675,7 @@ def lisi_graph_py(
     if subsample is not None:
         subset_pct = int(subsample)
 
-    n_obs = adata_local.n_obs
+    n_obs = adata.n_obs
     if subset_pct >= 100:
         subset_idx = np.arange(n_obs)
     else:
@@ -1497,13 +1683,32 @@ def lisi_graph_py(
         rng = np.random.default_rng(0)
         subset_idx = np.sort(rng.choice(n_obs, size=n_subset, replace=False))
 
-    connectivities = adata_local.obsp["connectivities"].tocsr().copy()
-    large_enough = connectivities.data >= 3e-308
-    if verbose:
-        n_too_small = np.sum(~large_enough)
-        if n_too_small > 0:
-            print(f"{n_too_small} connectivities are smaller than 3e-308 and will be clipped")
-    connectivities.data[~large_enough] = 3e-308
+    cache_key = ("lisi_paths", id(adata), n_neighbors, subset_pct)
+    cached = None if graph_cache is None else graph_cache.get(cache_key)
+    if cached is None:
+        connectivities = adata.obsp["connectivities"].tocsr().copy()
+        large_enough = connectivities.data >= 3e-308
+        if verbose:
+            n_too_small = np.sum(~large_enough)
+            if n_too_small > 0:
+                print(
+                    f"{n_too_small} connectivities are smaller than 3e-308 "
+                    "and will be clipped"
+                )
+        connectivities.data[~large_enough] = 3e-308
+        graph_neighbors = [
+            _topk_shortest_path_neighbors(
+                connectivities,
+                int(cell_id),
+                n_neighbors,
+            )
+            for cell_id in subset_idx
+        ]
+        cached = (connectivities, subset_idx, graph_neighbors)
+        if graph_cache is not None:
+            graph_cache[cache_key] = cached
+    else:
+        connectivities, subset_idx, graph_neighbors = cached
 
     simpson = _compute_simpson_index_graph(
         connectivities=connectivities,
@@ -1512,6 +1717,7 @@ def lisi_graph_py(
         n_neighbors=n_neighbors,
         perplexity=perplexity,
         subset_idx=subset_idx,
+        graph_neighbors=graph_neighbors,
     )
 
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -1529,6 +1735,7 @@ def ilisi_graph(
     subsample=None,
     scale=True,
     verbose=False,
+    graph_cache=None,
 ):
     _check_adata(adata)
     _check_batch(batch_key, adata.obs)
@@ -1537,7 +1744,12 @@ def ilisi_graph(
     if scale and nbatches <= 1:
         return np.nan
 
-    adata_tmp = recompute_knn(adata, type_, use_rep)
+    adata_tmp = recompute_knn(
+        adata,
+        type_,
+        use_rep,
+        graph_cache=graph_cache,
+    )
     ilisi_score = lisi_graph_py(
         adata=adata_tmp,
         obs_key=batch_key,
@@ -1545,6 +1757,7 @@ def ilisi_graph(
         perplexity=None,
         subsample=subsample,
         verbose=verbose,
+        graph_cache=graph_cache,
     )
 
     ilisi = np.nanmedian(ilisi_score)
@@ -1607,6 +1820,7 @@ def clisi_graph(
     subsample=None,
     scale=True,
     verbose=False,
+    graph_cache=None,
 ):
     if batch_key is not None:
         warnings.warn("'batch_key' is deprecated for cLISI and ignored", stacklevel=1)
@@ -1614,7 +1828,12 @@ def clisi_graph(
     _check_adata(adata)
     _check_batch(label_key, adata.obs)
 
-    adata_tmp = recompute_knn(adata, type_, use_rep)
+    adata_tmp = recompute_knn(
+        adata,
+        type_,
+        use_rep,
+        graph_cache=graph_cache,
+    )
     scores = lisi_graph_py(
         adata=adata_tmp,
         obs_key=label_key,
@@ -1622,6 +1841,7 @@ def clisi_graph(
         perplexity=None,
         subsample=subsample,
         verbose=verbose,
+        graph_cache=graph_cache,
     )
 
     clisi = np.nanmedian(scores)
@@ -1797,6 +2017,7 @@ def metrics_all_local(
     n_cores=1,
     type_=None,
     verbose=False,
+    moran_reference=None,
 ):
     _check_adata(adata)
     _check_batch(batch_key, adata.obs)
@@ -1826,6 +2047,8 @@ def metrics_all_local(
         nmi_all.to_csv(cluster_nmi, header=False)
 
     lisi_subsample = None if subsample is None else (subsample * 100)
+    silhouette_cache = {}
+    lisi_cache = {}
 
     results = {
         "NMI_cluster/label": _safe_metric(
@@ -1851,6 +2074,7 @@ def metrics_all_local(
             embed=embed,
             metric=si_metric,
             scale=True,
+            silhouette_cache=silhouette_cache,
         ),
         "ASW_label/batch": _safe_metric(
             "ASW_label/batch",
@@ -1913,6 +2137,7 @@ def metrics_all_local(
             iso_threshold=n_isolated,
             scale=True,
             verbose=False,
+            silhouette_cache=silhouette_cache,
         ),
         "graph_conn": _safe_metric(
             "graph_conn",
@@ -1941,6 +2166,7 @@ def metrics_all_local(
             subsample=lisi_subsample,
             scale=True,
             verbose=verbose,
+            graph_cache=lisi_cache,
         ),
         "CiLISI": _safe_metric(
             "CiLISI",
@@ -1964,6 +2190,7 @@ def metrics_all_local(
             subsample=lisi_subsample,
             scale=True,
             verbose=verbose,
+            graph_cache=lisi_cache,
         ),
         "hvg_overlap": _safe_metric(
             "hvg_overlap",
@@ -1986,6 +2213,7 @@ def metrics_all_local(
             adata_int,
             batch_key=batch_key,
             embed=embed,
+            reference=moran_reference,
         ),
     }
 
@@ -2010,6 +2238,7 @@ def evaluate_embedding_scib(
     scib_n_cores=1,
     scib_organism="auto",
     scib_verbose=False,
+    moran_reference=None,
 ):
     """
     Local implementation of scIB metrics_all (without scIB API calls).
@@ -2023,10 +2252,11 @@ def evaluate_embedding_scib(
     if embed_key not in ad_tmp.obsm:
         raise KeyError(f"Embedding '{embed_key}' not found in adata.obsm")
 
-    adata_post = ad_tmp.copy()
-    adata_pre_local = adata_pre.copy() if adata_pre is not None else ad_tmp.copy()
-
-    adata_pre_aligned, adata_post_aligned = _align_pre_post(adata_pre_local, adata_post)
+    adata_pre_local = adata_pre if adata_pre is not None else ad_tmp
+    adata_pre_aligned, adata_post_aligned = _align_pre_post(
+        adata_pre_local,
+        ad_tmp,
+    )
 
     results = metrics_all_local(
         adata=adata_pre_aligned,
@@ -2047,6 +2277,7 @@ def evaluate_embedding_scib(
         n_cores=scib_n_cores,
         type_=scib_type,
         verbose=scib_verbose,
+        moran_reference=moran_reference,
     )
 
     # Legacy aliases for existing plotting / summaries.
@@ -2061,5 +2292,4 @@ def evaluate_embedding_scib(
     results["scib_subsample"] = scib_subsample
     results["scib_n_cores"] = scib_n_cores
     results["scib_organism"] = scib_organism
-
     return results
