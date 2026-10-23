@@ -9,8 +9,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import celltypist
 import numpy as np
 import pandas as pd
+import scanpy as sc
 
-from utils.dataset import normalize_log1p
+from utils.dataset import is_count_matrix
 from utils.pipeline import (
     SCORE_CLASSES_KEY,
     SCORE_KEY,
@@ -20,13 +21,22 @@ from utils.pipeline import (
 )
 
 
+def _normalize_log1p(adata, target_sum=1e4, *, copy=True):
+    """Apply CellTypist input normalization without mutating shared data."""
+    out = adata.copy() if copy else adata
+    if is_count_matrix(out.X):
+        sc.pp.normalize_total(out, target_sum=target_sum)
+        sc.pp.log1p(out)
+    return out
+
+
 def train_celltypist(adata, seed, run_out_path, args):
     """Train CellTypist on log-normalized reference expression."""
     seed_python_numpy(seed)
     # Training receives a lightweight AnnData whose expression matrix is
     # shared with the immutable reference. Copying here keeps normalization
     # inside the common per-run timing boundary without mutating later runs.
-    reference = normalize_log1p(adata, copy=True)
+    reference = _normalize_log1p(adata, copy=True)
     model = celltypist.train(
         X=reference,
         labels=args.train_celltype,
@@ -104,7 +114,7 @@ def _annotate_query(query, model):
 
 def predict_celltypist(adata, model, pred_key, seed, run_out_path, args):
     """Annotate query cells and retain CellTypist class probabilities."""
-    query = normalize_log1p(adata, copy=False)
+    query = _normalize_log1p(adata, copy=False)
     predicted, probabilities = _annotate_query(query, model)
 
     predicted.index = predicted.index.astype(str)

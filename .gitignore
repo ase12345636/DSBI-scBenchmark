@@ -5,3 +5,9 @@ __pycache__/
 data/
 .cache/
 models/
+!batch_effect/BioBatchNet/biobatchnet/models/
+!batch_effect/BioBatchNet/biobatchnet/models/*.py
+!batch_effect/BioBatchNet/biobatchnet/models/VampPrior/
+!batch_effect/BioBatchNet/biobatchnet/models/VampPrior/*.py
+!batch_effect/scDecorr/scdecorr/models/
+!batch_effect/scDecorr/scdecorr/models/*.py

@@ -4,9 +4,9 @@ Reference-based cell type annotation benchmark implemented in the same style
 as `batch_effect`: every tool has a small wrapper, while data loading,
 repeated runs, metrics, UMAP and result writing are handled by shared modules.
 
-The benchmark includes CellTypist, CHETAH, Seurat label transfer, SingleR and
-scGPT. Each tool uses an independent Conda environment to avoid
-Python/R and package-version conflicts.
+The benchmark includes CellTypist, CHETAH, Seurat label transfer, SingleR,
+scANVI, scGraphformer and scGPT. Each tool uses a method-appropriate Conda
+environment to avoid Python/R and package-version conflicts.
 
 ## Common input
 
@@ -36,7 +36,9 @@ accepted as an explicit missing value but cannot be executed.
 
 ## Common Python packages
 
-Every method environment needs the common Python evaluation/plotting stack:
+The existing methods and scANVI use the common Python evaluation/plotting
+stack below. scGraphformer uses its separately pinned CUDA-13 environment
+documented later because its verified stack uses NumPy 2:
 
 ```bash
 pip install "numpy<2" pandas scipy scikit-learn \
@@ -58,6 +60,10 @@ upgrade or lock packages:
 | CHETAH | 1.18.0 |
 | SingleR | 2.8.0 |
 | scGPT | 0.2.4 |
+| scvi-tools (scANVI) | 1.3.3 |
+| PyTorch (scANVI environment) | 2.12.0a0+git29094e4, CUDA 13.0 |
+| scGraphformer source reference | commit `75c76fc6b66195297a764d6e4569b3c01e084538` |
+| PyTorch (scGraphformer environment) | 2.11.0+cu130 |
 
 ## CellTypist
 
@@ -203,7 +209,128 @@ archive. A missing or invalid checkpoint is downloaded to a temporary sibling
 directory, fully loaded for validation, and only then published to the model
 directory. A different checkpoint can be passed with `--scgpt_model_dir`.
 
-## Run all methods
+## scANVI
+
+The scANVI adapter is verified with `scvi-tools==1.3.3` in the existing
+`sctools` environment. It follows the official scArches reference-mapping
+workflow: 2,000 reference-only HVGs, the recommended SCVI architecture for
+query mapping, automatic SCVI epochs, 20 labelled SCANVI epochs with 100
+samples per label, and 100 query-mapping epochs with zero weight decay.
+These method settings are fixed internally and are not exposed as command-line
+options; only the shared benchmark inputs and resource controls remain public.
+
+The scANVI adapter asks the common loader to retain raw counts from
+`layers/counts`, and scvi-tools registers that layer explicitly. The common
+pipeline may load ground truth for later evaluation, but it removes that
+column before invoking the adapter.
+scANVI therefore receives only the query expression, indices, and explicitly
+configured batch column. Every query mapping starts from the same immutable
+reference checkpoint.
+
+Verify the existing environment with:
+
+```bash
+conda activate sctools
+python -c 'import scvi, torch; print(scvi.__version__, torch.__version__, torch.version.cuda)'
+```
+
+If `sctools` must be rebuilt on this GB10 host, first retain or install a
+CUDA-13 PyTorch build supporting `sm_121` as described for scGPT, then install:
+
+```bash
+python -m pip install "numpy<2" pandas scipy scikit-learn \
+  anndata==0.11.4 scanpy==1.9.8 matplotlib seaborn umap-learn \
+  scvi-tools==1.3.3
+```
+
+## scGraphformer
+
+The method-specific setup is fully recorded in
+[`scGraphformer/INSTALL.md`](scGraphformer/INSTALL.md), with a reproducible
+environment file at
+[`scGraphformer/environment.yml`](scGraphformer/environment.yml). From this
+directory, the preferred clean installation is:
+
+```bash
+conda env create --file scGraphformer/environment.yml
+conda activate scGraphformer
+```
+
+Equivalent explicit commands are:
+
+```bash
+conda create --name scGraphformer --channel conda-forge \
+  python=3.10 git pip numpy=2.0.2 pandas=2.2.3 scipy=1.14.1 \
+  scikit-learn=1.6.0 h5py=3.12.1 matplotlib=3.9.3 \
+  seaborn=0.13.2 'psutil>=6'
+conda activate scGraphformer
+python -m pip install --index-url https://download.pytorch.org/whl/cu130 \
+  'torch==2.11.0+cu130'
+python -m pip install anndata==0.11.1 scanpy==1.10.4 \
+  torch-geometric==2.8.0.post1
+mkdir -p "$CONDA_PREFIX/src"
+git clone https://github.com/xyfan22/scGraphformer.git \
+  "$CONDA_PREFIX/src/scGraphformer"
+git -C "$CONDA_PREFIX/src/scGraphformer" checkout --detach \
+  75c76fc6b66195297a764d6e4569b3c01e084538
+```
+
+On this workstation, a faster equivalent starting point is
+`conda create --name scGraphformer --clone scLightGAT`; run the CUDA and
+GB10 compatibility checks in `scGraphformer/INSTALL.md` afterward.
+
+The wrapper loads and instantiates the model class directly from that pinned
+official checkout; it does not contain a second implementation of the model.
+The upstream PyTorch 1.13.1/CUDA 11.6 environment cannot target the GB10 GPU.
+On this aarch64 host only, the wrapper supplies the two `torch_sparse`
+operations used by the official class with native PyTorch `index_add_`.
+Full provenance, upstream defaults and intentional protocol differences are
+recorded in [`scGraphformer/UPSTREAM.md`](scGraphformer/UPSTREAM.md).
+
+The benchmark uses the authors' documented cross-platform command as a fixed
+workflow: `train_prop=0.8`, 20 epochs, batch size 256, and graph, exact KNN and
+HVG options enabled. Model and training settings are not exposed as
+command-line options; only the shared benchmark inputs and resource controls
+remain public.
+For benchmark consistency, one reference model is trained per seed and reused
+for all queries; query genes are aligned to the fixed reference gene order,
+with missing genes filled with zero. This is the train-once/predict-many
+adaptation required by the common benchmark runner, rather than the upstream
+pair-specific retraining script.
+
+## Run scANVI and scGraphformer
+
+The new tools use a separate launcher so an already-running `run_script.sh`
+job is not altered. It accepts the same common arguments and runs both methods
+by default:
+
+```bash
+bash run_additional_methods.sh \
+    --train_path reference.h5ad \
+    --test_path query.h5ad \
+    --save_path results/ \
+    --train_celltype reference_label \
+    --test_celltype query_ground_truth \
+    --train_batch reference_batch \
+    --test_batch query_batch \
+    --n_jobs 12 \
+    --n_runs 5
+```
+
+Select one method with `--methods scANVI` or
+`--methods scGraphformer`. `SCBENCHMARK_METHODS` provides the same selection
+for the complete broad/CAF/Subtype command file:
+
+```bash
+bash run_additional_methods_cmd.sh
+SCBENCHMARK_METHODS=scANVI bash run_additional_methods_cmd.sh
+SCBENCHMARK_METHODS=scGraphformer bash run_additional_methods_cmd.sh
+```
+
+The default environments are `sctools` and `scGraphformer`. Override them with
+`SCBENCHMARK_SCANVI_ENV` and `SCBENCHMARK_SCGRAPHFORMER_ENV` when needed.
+
+## Run the existing benchmark launcher
 
 Activate or initialize Conda before launching. On a machine where Conda is not
 already available to non-interactive shells, point the launcher at its
@@ -249,28 +376,37 @@ every `.h5ad` file sequentially. CellTypist reuses one fitted classifier.
 CHETAH builds its profiles/tree per classifier call, SingleR trains its
 query-compatible index per query, and Seurat finds query-specific anchors (and
 its implicit reference PCA) per query; these operations are included in each
-query's prediction runtime.
+query's prediction runtime. scANVI reuses one reference checkpoint and performs
+an independent unlabeled scArches update for each query. scGraphformer reuses
+one fixed reference model; when its optional graph path is enabled, it builds
+a separate query KNN graph. Neither method sees query ground-truth labels.
 
 Runtime uses one common wrapper boundary for every method. Reading the source
 `.h5ad` files, evaluation and plotting are excluded; per-run method
 preprocessing, training and prediction are included.
 Python-to-R exchange and R subprocess startup are therefore included for the R
-methods. These values represent end-to-end method execution, not isolated
-algorithm-kernel time. Use fresh, uninterrupted runs for reportable timing:
-scGPT can resume an interrupted epoch checkpoint, but the final metric cannot
-recover wall time spent by the earlier terminated process.
+methods. scANVI query adaptation and scGraphformer query normalization and
+forward inference are included in prediction runtime; optional graph
+construction is also included when enabled. These
+values represent end-to-end method execution, not isolated algorithm-kernel
+time. Use fresh, uninterrupted runs for reportable timing: scGPT can resume an
+interrupted epoch checkpoint, but the final metric cannot recover wall time
+spent by the earlier terminated process.
 
 Standard-mode automatic resume is always enabled; there is no resume flag.
 Completion markers validate the seed, training options, input-file identity
 and all required result files. Re-running the same command skips completed
 datasets. R reference objects and scGPT checkpoints can be loaded when later
-queries remain; CellTypist retrains if an incomplete run still needs prediction.
-scGPT resumes at the next complete epoch if fine-tuning was interrupted. Results
-created before these markers existed are intentionally recomputed once, because
-the pipeline cannot prove that they came from the same protocol.
+queries remain. scANVI, scGraphformer and CellTypist retrain if an incomplete
+run still needs prediction. scGPT resumes at the next complete epoch if
+fine-tuning was interrupted. Results created before these markers existed are
+intentionally recomputed once, because the pipeline cannot prove that they came
+from the same protocol.
 
-The repository's `run_cmd.sh` already groups the seven independent tests this
-way and keeps CAF separate because CAF uses a different training reference.
+The repository's `run_cmd.sh` groups the seven independent tests this way and
+keeps CAF separate because CAF uses a different training reference.
+`run_additional_methods_cmd.sh` mirrors the same broad, CAF and five Subtype
+groups for scANVI and scGraphformer.
 
 For a dataset without query batch or ground-truth metadata:
 
@@ -292,9 +428,11 @@ performance; doing so measures training-set performance.
 
 ## Defaults, fairness, and memory safeguards
 
-No wrapper samples, caps, or aggregates away training/reference cells. Every
-method receives the full reference population. Query labels are never used to
-tune a method or its resource settings.
+No common wrapper samples, caps, or aggregates away training/reference cells.
+Every method receives the full reference population. scGraphformer then uses a
+random 80% reference training subset, matching the authors' cross-platform
+configuration.
+Query labels are never used to tune a method or its resource settings.
 
 The formal launcher fixes `--n_jobs 12`. CellTypist receives `n_jobs=12`, and
 SingleR receives both `MulticoreParam(workers=12)` and `num.threads=12`.
@@ -302,23 +440,27 @@ Seurat and CHETAH retain their installed algorithms while their BLAS/OpenMP
 libraries are capped at twelve threads. scGPT DataLoaders use twelve workers. This
 is one common resource ceiling, not dataset- or method-specific tuning.
 
-| Method | Execution policy without dropping cells |
+| Method | Execution policy |
 | --- | --- |
 | CellTypist | Uses the official centered logistic-regression defaults, with only `random_state` and the common `n_jobs` allowance supplied. Prediction is run in one call unless its estimated dense scaling workspace would exceed 23 GiB; only then is it split into output-equivalent cell batches. Training is not batched. |
 | CHETAH | Uses all reference cells and installed classifier defaults. It uses a full query unless the estimated query-dependent working set can be reduced by output-equivalent batching. The default 200 discriminating genes is bounded only when fewer than 200 genes overlap. |
 | SingleR | Uses all reference cells with the official single-cell reference recommendation `de.method="wilcox"`, `aggr.ref=FALSE`, and fine-tuning and pruning at installed defaults. BiocParallel and the native thread parameter receive the common worker allowance. If needed, classification is batched and pruning is applied once after merging the complete result. |
 | Seurat | Uses all reference and query cells with the official `NormalizeData`/`FindVariableFeatures`/`ScaleData` and label-transfer workflow; prediction is not chunked. |
+| scANVI | Uses the official scvi-tools reference-mapping recipe with `layers/counts`, 2,000 reference-only HVGs, one SCVI→SCANVI reference checkpoint per seed, and an independent 100-epoch unlabeled query update from that immutable checkpoint. |
+| scGraphformer | Loads the official model class and uses the authors' cross-platform settings: a 0.8 reference training fraction, batch size 256, 3,500 reference-selected HVGs, and graph/KNN enabled. The common benchmark adaptation trains once per seed, fixes the reference gene order, constructs reference and query graphs independently, and reuses the model for every query. |
 | scGPT | Uses all reference cells, sparse-equivalent binning, mini-batch training, and batch-aligned prediction chunks (2,048 cells with the default batch size). Every query finishes row-ordered binning before tokenization begins; temporary sparse CSR chunks are deleted after that prediction call and are not a reusable cache. |
 
 The 23 GiB value used by the R wrappers and CellTypist prediction is a
 best-effort planning threshold,
 not a whole-process guarantee. The common pipeline retains one lean reference
-object containing expression and required metadata (plus `counts` for Seurat),
+object containing expression and required metadata (plus layers explicitly
+requested by Seurat and scANVI),
 without a second deep training copy. Selective H5AD reads never materialize
 unused `raw`, unrelated layers, embeddings, graphs or unstructured metadata.
 Per-run AnnData objects share the expression matrices but receive independent
-metadata frames. Method-owned transformations, including CellTypist reference
-normalization, are performed independently inside each run's timing boundary.
+metadata frames. Shared utilities perform only loading and benchmark-wide QC;
+method-owned transformations, including CellTypist reference normalization,
+live in each adapter and run independently inside the timing boundary.
 In addition, CellTypist's centered default densifies
 the integrated 236,975-by-19,836 reference to about 35 GiB before scaler working
 copies. Consequently the official CellTypist Broad run, and potentially other

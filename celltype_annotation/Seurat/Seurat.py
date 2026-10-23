@@ -42,5 +42,6 @@ if __name__ == "__main__":
     parser = create_argument_parser("Seurat")
     arguments = parser.parse_args()
     run_annotation_pipeline(
-        "Seurat", "seurat_prediction", train_seurat, predict_seurat, arguments
+        "Seurat", "seurat_prediction", train_seurat, predict_seurat, arguments,
+        keep_layers=("counts",),
     )

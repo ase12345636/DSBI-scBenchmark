@@ -87,22 +87,55 @@ python3 Scanorama/Scanorama.py \
     --celltype_key "$celltype_key" \
     --run_times "$n_runs"
 
-# echo "Running scANVI batch correction"
-# python3 scANVI/scANVI.py \
-#     --dataset_path "$dataset_path" \
-#     --save_path "$save_path" \
-#     --batch_key "$batch_key" \
-#     --celltype_key "$celltype_key" \
-#     --run_times "$n_runs"
+echo "Running scANVI batch correction"
+python3 scANVI/scANVI.py \
+    --dataset_path "$dataset_path" \
+    --save_path "$save_path" \
+    --batch_key "$batch_key" \
+    --celltype_key "$celltype_key" \
+    --run_times "$n_runs"
 
 
-# echo "Running scCM batch correction"
-# python3 scCM/sccm.py \
-#     --dataset_path "$dataset_path" \
-#     --save_path "$save_path" \
-#     --batch_key "$batch_key" \
-#     --celltype_key "$celltype_key" \
-#     --run_times "$n_runs"
+echo "Running scCM batch correction"
+python3 scCM/sccm.py \
+    --dataset_path "$dataset_path" \
+    --save_path "$save_path" \
+    --batch_key "$batch_key" \
+    --celltype_key "$celltype_key" \
+    --run_times "$n_runs"
+
+echo "Running CONCORD batch correction"
+python3 CONCORD/CONCORD.py \
+    --dataset_path "$dataset_path" \
+    --save_path "$save_path" \
+    --batch_key "$batch_key" \
+    --celltype_key "$celltype_key" \
+    --run_times "$n_runs"
+
+echo "Running BioBatchNet batch correction"
+python3 BioBatchNet/BioBatchNet.py \
+    --dataset_path "$dataset_path" \
+    --save_path "$save_path" \
+    --batch_key "$batch_key" \
+    --celltype_key "$celltype_key" \
+    --run_times "$n_runs"
+
+echo "Running FADVI batch correction"
+python3 FADVI/FADVI.py \
+    --dataset_path "$dataset_path" \
+    --save_path "$save_path" \
+    --batch_key "$batch_key" \
+    --celltype_key "$celltype_key" \
+    --run_times "$n_runs"
+
+conda activate SCIDRL
+echo "Running SCIDRL batch correction"
+python3 SCIDRL/SCIDRL.py \
+    --dataset_path "$dataset_path" \
+    --save_path "$save_path" \
+    --batch_key "$batch_key" \
+    --celltype_key "$celltype_key" \
+    --run_times "$n_runs"
 
 conda activate Seurat
 echo "Running Seurat batch correction"
@@ -131,20 +164,83 @@ python3 scDML/scDMl.py \
     --celltype_key "$celltype_key" \
     --run_times "$n_runs"
 
-# conda activate scDML
-# echo "Running scDML-cluster batch correction"
-# python3 scDML-cluster/scDMl.py \
-#     --dataset_path "$dataset_path" \
-#     --save_path "$save_path" \
-#     --batch_key "$batch_key" \
-#     --celltype_key "$celltype_key" \
-#     --run_times "$n_runs"
+conda activate SCALEX
+echo "Running SCALEX batch correction"
+python3 SCALEX/SCALEX.py \
+    --dataset_path "$dataset_path" \
+    --save_path "$save_path" \
+    --batch_key "$batch_key" \
+    --celltype_key "$celltype_key" \
+    --run_times "$n_runs"
 
-# conda activate SMNN
-# echo "Running SMNN supervised batch correction"
-# python3 SMNN/SMNN.py \
-#     --dataset_path "$dataset_path" \
-#     --save_path "$save_path" \
-#     --batch_key "$batch_key" \
-#     --celltype_key "$celltype_key" \
-#     --run_times "$n_runs"
+conda activate scDREAMER
+echo "Running scDREAMER batch correction"
+python3 scDREAMER/scdreamer.py \
+    --dataset_path "$dataset_path" \
+    --save_path "$save_path" \
+    --batch_key "$batch_key" \
+    --celltype_key "$celltype_key" \
+    --run_times "$n_runs"
+
+conda activate CLEAR
+echo "Running CLEAR batch correction"
+python3 CLEAR/clear.py \
+    --dataset_path "$dataset_path" \
+    --save_path "$save_path" \
+    --batch_key "$batch_key" \
+    --celltype_key "$celltype_key" \
+    --run_times "$n_runs"
+
+conda activate MetaQ
+echo "Running MetaQ batch correction"
+python3 MetaQ/metaq.py \
+    --dataset_path "$dataset_path" \
+    --save_path "$save_path" \
+    --batch_key "$batch_key" \
+    --celltype_key "$celltype_key" \
+    --run_times "$n_runs"
+
+conda activate scDecorr
+echo "Running scDecorr batch correction"
+python3 scDecorr/scDecorr.py \
+    --dataset_path "$dataset_path" \
+    --save_path "$save_path" \
+    --batch_key "$batch_key" \
+    --celltype_key "$celltype_key" \
+    --run_times "$n_runs"
+
+conda activate AIF
+echo "Running AIF batch correction"
+python3 AIF/AIF.py \
+    --dataset_path "$dataset_path" \
+    --save_path "$save_path" \
+    --batch_key "$batch_key" \
+    --celltype_key "$celltype_key" \
+    --run_times "$n_runs"
+
+conda activate scMEDAL
+echo "Running scMEDAL batch correction"
+python3 scMEDAL/scmedal.py \
+    --dataset_path "$dataset_path" \
+    --save_path "$save_path" \
+    --batch_key "$batch_key" \
+    --celltype_key "$celltype_key" \
+    --run_times "$n_runs"
+
+conda activate scDML
+echo "Running scDML-cluster batch correction"
+python3 scDML-cluster/scDMl.py \
+    --dataset_path "$dataset_path" \
+    --save_path "$save_path" \
+    --batch_key "$batch_key" \
+    --celltype_key "$celltype_key" \
+    --run_times "$n_runs"
+
+conda activate SMNN
+echo "Running SMNN supervised batch correction"
+python3 SMNN/SMNN.py \
+    --dataset_path "$dataset_path" \
+    --save_path "$save_path" \
+    --batch_key "$batch_key" \
+    --celltype_key "$celltype_key" \
+    --run_times "$n_runs"

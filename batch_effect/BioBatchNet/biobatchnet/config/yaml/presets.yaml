@@ -1,0 +1,89 @@
+damond:
+  mode: imc
+  trainer:
+    epochs: 30
+    sampling_fraction: 0.2
+  loss:
+    recon: 10
+    discriminator: 0.3
+    classifier: 1
+    kl_bio: 0.001
+    kl_batch: 0.1
+    ortho: 0.01
+
+hoch:
+  mode: imc
+  trainer:
+    epochs: 30
+    sampling_fraction: 0.1
+  loss:
+    recon: 10
+    discriminator: 0.1
+    classifier: 1
+    kl_bio: 0.001
+    kl_batch: 0.1
+    ortho: 0.01
+
+immucan:
+  mode: imc
+  trainer:
+    epochs: 30
+  loss:
+    recon: 10
+    discriminator: 0.3
+    classifier: 1
+    kl_bio: 0.005
+    kl_batch: 0.1
+    ortho: 0.01
+
+pancreas:
+  mode: seq
+  trainer:
+    epochs: 50
+  loss:
+    recon: 10
+    discriminator: 0.04
+    classifier: 1
+    kl_bio: 1.0e-06
+    kl_batch: 0.01
+    ortho: 0.0002
+    kl_size: 0.002
+
+macaque:
+  mode: seq
+  trainer:
+    epochs: 50
+  loss:
+    recon: 3
+    discriminator: 0.02
+    classifier: 0.02
+    kl_bio: 1.0e-05
+    kl_batch: 0.01
+    ortho: 0.0002
+    kl_size: 0.002
+
+lung:
+  mode: seq
+  trainer:
+    epochs: 100
+  loss:
+    recon: 10
+    discriminator: 0.01
+    classifier: 1
+    kl_bio: 0.000001
+    kl_batch: 0.01
+    ortho: 0.0002
+    kl_size: 0.002
+
+mousebrain:
+  mode: seq
+  trainer:
+    epochs: 50
+  loss:
+    recon: 2
+    discriminator: 0.3
+    classifier: 1
+    kl_bio: 0.0005
+    kl_batch: 0.01
+    ortho: 0.001
+    kl_size: 0.01

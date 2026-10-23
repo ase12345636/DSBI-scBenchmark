@@ -43,25 +43,13 @@ def preprocess_harmony(
     sc.pp.normalize_total(ad_harmony, target_sum=target_sum)
     sc.pp.log1p(ad_harmony)
     if ad_harmony.n_vars > n_top_genes:
-        # The official Harmony Seurat vignette selects 2,000 variable features
-        # within each condition and runs PCA on their union.
-        hvg_union = set()
-        for batch_value in ad_harmony.obs[batch_col].unique():
-            ad_batch = ad_harmony[
-                ad_harmony.obs[batch_col] == batch_value
-            ].copy()
-            sc.pp.highly_variable_genes(
-                ad_batch,
-                n_top_genes=n_top_genes,
-                flavor="seurat_v3",
-                layer="counts",
-            )
-            hvg_union.update(
-                ad_batch.var_names[ad_batch.var["highly_variable"]].tolist()
-            )
-        ad_harmony = ad_harmony[
-            :, ad_harmony.var_names.isin(hvg_union)
-        ].copy()
+        sc.pp.highly_variable_genes(
+            ad_harmony,
+            n_top_genes=n_top_genes,
+            flavor="seurat_v3",
+            layer="counts",
+            subset=True,
+        )
     ad_harmony.var["highly_variable"] = True
     sc.pp.scale(ad_harmony, max_value=10)
     sc.tl.pca(

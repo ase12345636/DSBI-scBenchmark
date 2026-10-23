@@ -1,8 +1,9 @@
 """Unified train/predict/evaluate pipeline for annotation benchmarks.
 
-Each tool implements only model training and prediction. Loading, repeated
-runs, metrics, UMAPs, result files and resource tracking are shared here, in
-the same style as ``batch_effect/utils/pipeline.py``.
+Each tool owns its method-specific preprocessing, model training and
+prediction. Loading, shared QC, repeated runs, metrics, UMAPs, result files
+and resource tracking are shared here, in the same style as
+``batch_effect/utils/pipeline.py``.
 """
 
 from __future__ import annotations
@@ -621,11 +622,13 @@ def _validate_key(adata, key, dataset_name, role):
 
 def run_annotation_pipeline(
     tool_name, pred_key, train_fn, predict_fn, args,
-    load_model_fn=None, model_is_complete_fn=None,
+    load_model_fn=None, model_is_complete_fn=None, keep_layers=(),
 ):
     """Train once per seed, then predict one file or every file in a directory.
 
     ``load_model_fn`` and ``model_is_complete_fn`` are optional resume hooks.
+    ``keep_layers`` lets each method declare expression layers needed by its
+    own preprocessing without teaching the shared loader method names.
     R-backed methods need no hook because their common ``reference.rds`` model
     handle is detected automatically.
     """
@@ -649,7 +652,7 @@ def run_annotation_pipeline(
 
     test_specs = _resolve_test_specs(args)
     multi_test = len(test_specs) > 1
-    retained_layers = ("counts",) if tool_name == "Seurat" else ()
+    retained_layers = tuple(keep_layers)
     for spec in test_specs:
         test_args = copy.copy(args)
         test_args.test_path = spec["path"]

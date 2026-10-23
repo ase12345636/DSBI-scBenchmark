@@ -1,0 +1,36 @@
+mode: imc
+seed: 42
+
+model:
+  latent_sz: 20
+  bio_encoder_layers: [512, 2048, 2048]
+  batch_encoder_layers: [512]
+  decoder_layers: [2048, 2048, 512]
+  bio_classifier_layers: [512, 2048, 2048]
+  batch_classifier_layers: [512]
+  dropout: 0.1
+  use_bn: True
+
+loss:
+  recon: 10.0
+  discriminator: 0.3
+  classifier: 1.0
+  kl_bio: 0.001
+  kl_batch: 0.1
+  ortho: 0.01
+  kl_size: 0.002
+
+trainer:
+  epochs: 100
+  batch_size: 128
+  lr: 1.0e-4
+  weight_decay: 1.0e-5
+  scheduler_step: 50
+  scheduler_gamma: 0.1
+  early_stop: 10
+  save_dir: ./saved/
+  save_period: 10
+  verbosity: 2
+  sampling_fraction: 1.0
+  eval_seed: 42
+  inde_eval_period: 3
