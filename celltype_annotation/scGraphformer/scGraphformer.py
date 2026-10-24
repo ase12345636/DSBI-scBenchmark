@@ -134,17 +134,55 @@ def _normalize_log1p(adata, target_sum=1e4, *, copy=True):
     return out
 
 
+def _expressed_gene_mask(matrix):
+    """Return genes with at least one non-zero reference value."""
+    if sparse.issparse(matrix):
+        return np.asarray((matrix != 0).sum(axis=0)).ravel() > 0
+    return np.any(np.asarray(matrix) != 0, axis=0)
+
+
+def _select_reference_hvgs(reference):
+    """Run the official HVG selection with its zero-gene edge case handled."""
+    kwargs = {
+        "min_mean": 0.0125,
+        "max_mean": 4,
+        "min_disp": 0.5,
+        "n_top_genes": HVG_COUNT,
+        "flavor": "cell_ranger",
+        "subset": True,
+    }
+    try:
+        sc.pp.highly_variable_genes(reference, **kwargs)
+        return reference
+    except ValueError as error:
+        if "Bin edges must be unique" not in str(error):
+            raise
+
+    expressed = _expressed_gene_mask(reference.X)
+    removed = int((~expressed).sum())
+    if removed == 0:
+        raise RuntimeError(
+            "scGraphformer HVG binning failed although the reference has no "
+            "all-zero genes"
+        )
+    if not expressed.any():
+        raise ValueError("Reference dataset contains no expressed genes")
+    print(
+        f"[scGraphformer] HVG binning encountered tied zero-expression "
+        f"genes; removing {removed} reference-only all-zero genes and retrying"
+    )
+    reference = reference[:, expressed].copy()
+    if reference.n_vars > HVG_COUNT:
+        sc.pp.highly_variable_genes(reference, **kwargs)
+    return reference
+
+
 def _reference_features(adata, use_hvg):
     reference = _normalize_log1p(adata, copy=True)
     if reference.n_vars == 0:
         raise ValueError("Reference dataset contains no genes")
     if use_hvg and reference.n_vars > HVG_COUNT:
-        sc.pp.highly_variable_genes(
-            reference, min_mean=0.0125, max_mean=4, min_disp=0.5,
-            n_top_genes=HVG_COUNT,
-            flavor="cell_ranger",
-            subset=True,
-        )
+        reference = _select_reference_hvgs(reference)
     genes = reference.var_names.astype(str).to_numpy()
     return torch.from_numpy(_dense(reference.X)), genes
 

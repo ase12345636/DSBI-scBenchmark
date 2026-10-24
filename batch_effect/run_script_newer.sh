@@ -209,20 +209,11 @@ python3 scDecorr/scDecorr.py \
     --celltype_key "$celltype_key" \
     --run_times "$n_runs"
 
-conda activate scMEDAL
-echo "Running scMEDAL batch correction"
-python3 scMEDAL/scmedal.py \
-    --dataset_path "$dataset_path" \
-    --save_path "$save_path" \
-    --batch_key "$batch_key" \
-    --celltype_key "$celltype_key" \
-    --run_times "$n_runs"
-
 # conda activate scDML
 # echo "Running scDML-cluster batch correction"
 # python3 scDML-cluster/scDMl.py \
 #     --dataset_path "$dataset_path" \
-#     --save_path "$save_path" \
+#     --save_path "$save_path" \nvt
 #     --batch_key "$batch_key" \
 #     --celltype_key "$celltype_key" \
 #     --run_times "$n_runs"
