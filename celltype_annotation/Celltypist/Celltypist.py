@@ -4,7 +4,7 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import celltypist
 import numpy as np
@@ -136,7 +136,7 @@ def predict_celltypist(adata, model, pred_key, seed, run_out_path, args):
 
 
 if __name__ == "__main__":
-    parser = create_argument_parser("Celltypist")
+    parser = create_argument_parser("Celltypist", include_n_jobs=True)
     arguments = parser.parse_args()
     run_annotation_pipeline(
         "Celltypist",
@@ -144,4 +144,7 @@ if __name__ == "__main__":
         train_celltypist,
         predict_celltypist,
         arguments,
+        expression_layers=(),
+        share_train_expression=True,
+        keep_var_metadata=False,
     )

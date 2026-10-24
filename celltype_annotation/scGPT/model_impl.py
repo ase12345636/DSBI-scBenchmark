@@ -18,7 +18,7 @@ from collections import Counter, OrderedDict
 from pathlib import Path
 from typing import Dict
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 # ============================================================
 # torchtext compatibility shim
@@ -236,9 +236,9 @@ from scgpt.tokenizer.gene_tokenizer import GeneVocab, pad_batch
 from scgpt.preprocess import Preprocessor, _digitize
 from scgpt.utils import set_seed
 
-from utils.label_utils import get_broad_type
+from label_utils import get_broad_type
 from utils.dataset import is_count_matrix
-from utils.scgpt_compat import (
+from scgpt_compat import (
     save_subtype_results, load_adata, ensure_dir,
     resolve_label_col,
     BROAD_TYPES_FOR_SUBTYPE,

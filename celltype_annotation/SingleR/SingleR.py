@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from utils.pipeline import (  # noqa: E402
     create_argument_parser,
@@ -69,7 +69,7 @@ def predict_singler(
 
 
 if __name__ == "__main__":
-    parser = create_argument_parser("SingleR")
+    parser = create_argument_parser("SingleR", include_n_jobs=True)
     arguments = parser.parse_args()
 
     run_annotation_pipeline(
@@ -78,4 +78,7 @@ if __name__ == "__main__":
         train_singler,
         predict_singler,
         arguments,
+        expression_layers=(),
+        share_train_expression=True,
+        keep_var_metadata=False,
     )

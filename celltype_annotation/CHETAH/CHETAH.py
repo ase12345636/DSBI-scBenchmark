@@ -4,7 +4,7 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from utils.pipeline import (
     create_argument_parser,
@@ -29,8 +29,11 @@ def predict_chetah(adata, model_path, pred_key, seed, run_out_path, args):
 
 
 if __name__ == "__main__":
-    parser = create_argument_parser("CHETAH")
+    parser = create_argument_parser("CHETAH", include_n_jobs=True)
     arguments = parser.parse_args()
     run_annotation_pipeline(
-        "CHETAH", "chetah_prediction", train_chetah, predict_chetah, arguments
+        "CHETAH", "chetah_prediction", train_chetah, predict_chetah, arguments,
+        expression_layers=(),
+        share_train_expression=True,
+        keep_var_metadata=False,
     )

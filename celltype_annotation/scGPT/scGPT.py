@@ -6,7 +6,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
 import torch
@@ -283,7 +283,7 @@ def find_pretrained_model():
 
 
 if __name__ == "__main__":
-    parser = create_argument_parser("scGPT")
+    parser = create_argument_parser("scGPT", include_n_jobs=True)
     parser.add_argument("--scgpt_model_dir", type=Path, default=None)
     parser.add_argument("--epochs", type=int, default=model_impl.DEFAULT_EPOCHS)
     parser.add_argument("--batch_size", type=int, default=model_impl.DEFAULT_BATCH_SIZE)
@@ -306,4 +306,7 @@ if __name__ == "__main__":
         predict_scgpt,
         arguments,
         load_model_fn=load_scgpt_model,
+        expression_layers=(),
+        share_train_expression=True,
+        keep_var_metadata=False,
     )

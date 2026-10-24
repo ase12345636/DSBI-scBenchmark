@@ -9,7 +9,7 @@ import scanpy as sc
 import scvi
 from anndata import AnnData
 
-sys.path.append(str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from utils.pipeline import (  # noqa: E402
     SCORE_CLASSES_KEY, SCORE_KEY, create_argument_parser, run_annotation_pipeline,
@@ -110,7 +110,7 @@ def predict_scanvi(
 
 
 if __name__ == "__main__":
-    parser = create_argument_parser("scANVI")
+    parser = create_argument_parser("scANVI", include_n_jobs=True)
     parser.set_defaults(
         n_top_genes=2_000,
         batch_size=128,
@@ -126,5 +126,7 @@ if __name__ == "__main__":
 
     run_annotation_pipeline(
         "scANVI", "scanvi_prediction", train_scanvi, predict_scanvi, arguments,
-        keep_layers=("counts",),
+        expression_layers=("counts",),
+        share_train_expression=True,
+        keep_var_metadata=False,
     )

@@ -4,7 +4,7 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from utils.pipeline import (
     create_argument_parser,
@@ -39,9 +39,11 @@ def predict_seurat(adata, model_path, pred_key, seed, run_out_path, args):
 
 
 if __name__ == "__main__":
-    parser = create_argument_parser("Seurat")
+    parser = create_argument_parser("Seurat", include_n_jobs=True)
     arguments = parser.parse_args()
     run_annotation_pipeline(
         "Seurat", "seurat_prediction", train_seurat, predict_seurat, arguments,
-        keep_layers=("counts",),
+        expression_layers=("counts",),
+        share_train_expression=True,
+        keep_var_metadata=False,
     )

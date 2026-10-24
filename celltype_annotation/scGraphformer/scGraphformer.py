@@ -19,7 +19,7 @@ import torch
 import torch.nn.functional as F
 from torch_geometric.utils import add_self_loops, remove_self_loops, subgraph
 
-sys.path.append(str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from utils.dataset import is_count_matrix
 from utils.pipeline import (  # noqa: E402
@@ -317,7 +317,7 @@ def predict_scgraphformer(
 
 
 if __name__ == "__main__":
-    parser = create_argument_parser("scGraphformer")
+    parser = create_argument_parser("scGraphformer", include_n_jobs=True)
     parser.set_defaults(**SCGRAPHFORMER_SETTINGS)
     args = parser.parse_args()
     run_annotation_pipeline(
@@ -326,4 +326,7 @@ if __name__ == "__main__":
         train_scgraphformer,
         predict_scgraphformer,
         args,
+        expression_layers=(),
+        share_train_expression=True,
+        keep_var_metadata=False,
     )

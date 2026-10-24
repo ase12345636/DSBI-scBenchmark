@@ -2,7 +2,8 @@
 
 Reference-based cell type annotation benchmark implemented in the same style
 as `batch_effect`: every tool has a small wrapper, while data loading,
-repeated runs, metrics, UMAP and result writing are handled by shared modules.
+repeated runs, metrics, UMAP and result writing are handled by the project-level
+[`utils`](utils) package mirrored with scLightGAT.
 
 The benchmark includes CellTypist, CHETAH, Seurat label transfer, SingleR,
 scANVI, scGraphformer and scGPT. Each tool uses a method-appropriate Conda
@@ -24,10 +25,6 @@ names:
 - `--test_batch`: query batch column used in saved coordinates and batch UMAP.
 - `--test_batch_map`: optional `DATASET=COLUMN,...` overrides for a standard
   query directory whose files use different batch-column names.
-- `--n_jobs`: common CPU allowance for every method (default `12`). Native
-  worker interfaces receive this value; BLAS/OpenMP libraries are capped at
-  the same value for methods without such an interface.
-
 Pass the literal value `None` when a column does not exist. With
 `--test_celltype None`, prediction and UMAP outputs are still generated but
 classification metrics, confusion matrices and ground-truth UMAPs are
@@ -245,18 +242,7 @@ python -m pip install "numpy<2" pandas scipy scikit-learn \
 
 ## scGraphformer
 
-The method-specific setup is fully recorded in
-[`scGraphformer/INSTALL.md`](scGraphformer/INSTALL.md), with a reproducible
-environment file at
-[`scGraphformer/environment.yml`](scGraphformer/environment.yml). From this
-directory, the preferred clean installation is:
-
-```bash
-conda env create --file scGraphformer/environment.yml
-conda activate scGraphformer
-```
-
-Equivalent explicit commands are:
+Create the standalone environment with:
 
 ```bash
 conda create --name scGraphformer --channel conda-forge \
@@ -276,16 +262,14 @@ git -C "$CONDA_PREFIX/src/scGraphformer" checkout --detach \
 ```
 
 On this workstation, a faster equivalent starting point is
-`conda create --name scGraphformer --clone scLightGAT`; run the CUDA and
-GB10 compatibility checks in `scGraphformer/INSTALL.md` afterward.
+`conda create --name scGraphformer --clone scLightGAT`, followed by the pinned
+PyTorch, PyG and official-source installation commands above.
 
 The wrapper loads and instantiates the model class directly from that pinned
 official checkout; it does not contain a second implementation of the model.
 The upstream PyTorch 1.13.1/CUDA 11.6 environment cannot target the GB10 GPU.
 On this aarch64 host only, the wrapper supplies the two `torch_sparse`
 operations used by the official class with native PyTorch `index_add_`.
-Full provenance, upstream defaults and intentional protocol differences are
-recorded in [`scGraphformer/UPSTREAM.md`](scGraphformer/UPSTREAM.md).
 
 The benchmark uses the authors' documented cross-platform command as a fixed
 workflow: `train_prop=0.8`, 20 epochs, batch size 256, and graph, exact KNN and
@@ -298,43 +282,10 @@ with missing genes filled with zero. This is the train-once/predict-many
 adaptation required by the common benchmark runner, rather than the upstream
 pair-specific retraining script.
 
-## Run scANVI and scGraphformer
+## Run the benchmark launcher
 
-The new tools use a separate launcher so an already-running `run_script.sh`
-job is not altered. It accepts the same common arguments and runs both methods
-by default:
-
-```bash
-bash run_additional_methods.sh \
-    --train_path reference.h5ad \
-    --test_path query.h5ad \
-    --save_path results/ \
-    --train_celltype reference_label \
-    --test_celltype query_ground_truth \
-    --train_batch reference_batch \
-    --test_batch query_batch \
-    --n_jobs 12 \
-    --n_runs 5
-```
-
-Select one method with `--methods scANVI` or
-`--methods scGraphformer`. `SCBENCHMARK_METHODS` provides the same selection
-for the complete broad/CAF/Subtype command file:
-
-```bash
-bash run_additional_methods_cmd.sh
-SCBENCHMARK_METHODS=scANVI bash run_additional_methods_cmd.sh
-SCBENCHMARK_METHODS=scGraphformer bash run_additional_methods_cmd.sh
-```
-
-The default environments are `sctools` and `scGraphformer`. Override them with
-`SCBENCHMARK_SCANVI_ENV` and `SCBENCHMARK_SCGRAPHFORMER_ENV` when needed.
-
-## Run the existing benchmark launcher
-
-Activate or initialize Conda before launching. On a machine where Conda is not
-already available to non-interactive shells, point the launcher at its
-initialization script with `SCBENCHMARK_CONDA_SH=/path/to/conda.sh`.
+The launcher initializes Conda from the path at the top of `run_script.sh`;
+update that single path if the project is moved to another workstation.
 
 ```bash
 bash run_script.sh \
@@ -345,7 +296,6 @@ bash run_script.sh \
     --test_celltype query_ground_truth \
     --train_batch reference_batch \
     --test_batch query_batch \
-    --n_jobs 12 \
     --n_runs 5
 ```
 
@@ -361,15 +311,18 @@ bash run_script.sh \
     --train_batch Data_source \
     --test_batch None \
     --test_batch_map 'GSE115978=samples,GSE123139=Sample.Short.Name,Zhengsorted=None' \
-    --n_jobs 12 \
     --n_runs 5
 ```
 
-When `--base_seed` is omitted, the first invocation generates each run seed
-from system entropy and stores it under `SAVE_PATH/.benchmark_state/seeds/`.
-All methods in the same result root reuse that run seed, including after a
-restart. Pass `--base_seed` only when an explicitly reproducible fixed schedule
-is desired.
+The launcher generates each run seed once from system entropy and stores it
+under `SAVE_PATH/.benchmark_state/seeds/`. All methods in the same result root
+reuse that persisted seed, including after a restart.
+
+The retained CD8 T-cell scGraphformer runs were completed with a different
+persisted seed schedule before the repositories were unified. A tool-specific
+state records those five actual seeds so resume remains truthful and does not
+rerun or relabel existing results. Do not treat CD8 scGraphformer run indices
+as paired seeds with the other methods.
 
 A directory run prepares the reference once for each run and seed, then predicts
 every `.h5ad` file sequentially. CellTypist reuses one fitted classifier.
@@ -403,10 +356,10 @@ fine-tuning was interrupted. Results created before these markers existed are
 intentionally recomputed once, because the pipeline cannot prove that they came
 from the same protocol.
 
-The repository's `run_cmd.sh` groups the seven independent tests this way and
-keeps CAF separate because CAF uses a different training reference.
-`run_additional_methods_cmd.sh` mirrors the same broad, CAF and five Subtype
-groups for scANVI and scGraphformer.
+The repository's `run_cmd.sh` runs the broad test directory, keeps CAF
+separate because it uses a different training reference, and loops over the
+five Subtype groups. The unified `run_script.sh` includes all seven benchmark
+methods, including scANVI and scGraphformer.
 
 For a dataset without query batch or ground-truth metadata:
 
@@ -419,7 +372,6 @@ bash run_script.sh \
     --test_celltype None \
     --train_batch None \
     --test_batch None \
-    --n_jobs 12 \
     --n_runs 1
 ```
 
@@ -458,7 +410,8 @@ requested by Seurat and scANVI),
 without a second deep training copy. Selective H5AD reads never materialize
 unused `raw`, unrelated layers, embeddings, graphs or unstructured metadata.
 Per-run AnnData objects share the expression matrices but receive independent
-metadata frames. Shared utilities perform only loading and benchmark-wide QC;
+metadata frames. Shared utilities perform only selective loading, input
+validation and inference-time metadata isolation;
 method-owned transformations, including CellTypist reference normalization,
 live in each adapter and run independently inside the timing boundary.
 In addition, CellTypist's centered default densifies
@@ -510,9 +463,6 @@ compatible-label relaxation and its primary and exact-match metrics coincide.
 Each method directory also contains `metrics_summary.csv` and
 `metrics_aggregate.csv` across repeated runs.
 
-The optional `utils/analysis.py` can aggregate already completed method runs,
-but it is not called by `run_cmd.sh` or `run_script.sh`.
-
 ## Immune / non-immune evaluation
 
 Each evaluated non-CAF run also writes `immune/` and `non-immune/`, containing
@@ -526,8 +476,8 @@ mean/sample SD) formats. No method-level group directories are created;
 original summary and aggregate files are unchanged.
 
 Edit the explicit `IMMUNE_LABELS` and `NON_IMMUNE_LABELS` at the top of
-[`utils/compartment_evaluation.py`](utils/compartment_evaluation.py), keeping
-the identical file in scLightGAT synchronized. Cells are selected by **ground
+[`utils/compartment_evaluation.py`](utils/compartment_evaluation.py).
+Cells are selected by **ground
 truth**; cell-type labels remain intact, and cross-compartment wrong predictions
 remain errors. The existing source-compatible evaluator is reused. Metrics are
 conditional on that selected compartment, not binary lineage classification or
