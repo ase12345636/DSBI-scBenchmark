@@ -1,10 +1,24 @@
 #!/usr/bin/env bash
-set -eo pipefail
+set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
 
-source /Group16T/common/ccuc/miniconda3/etc/profile.d/conda.sh
+if [[ -z "${CONDA_BASE:-}" ]]; then
+    if ! command -v conda >/dev/null 2>&1; then
+        echo "Error: conda is not available in PATH." >&2
+        exit 1
+    fi
+    CONDA_BASE="$(conda info --base)"
+fi
+
+CONDA_SH="$CONDA_BASE/etc/profile.d/conda.sh"
+
+if [[ ! -f "$CONDA_SH" ]]; then
+    echo "Error: Conda initialization script not found: $CONDA_SH" >&2
+    exit 1
+fi
+
+source "$CONDA_SH"
 conda activate sctools
 
 batch_key="batch"
@@ -203,24 +217,6 @@ python3 MetaQ/metaq.py \
 conda activate scDecorr
 echo "Running scDecorr batch correction"
 python3 scDecorr/scDecorr.py \
-    --dataset_path "$dataset_path" \
-    --save_path "$save_path" \
-    --batch_key "$batch_key" \
-    --celltype_key "$celltype_key" \
-    --run_times "$n_runs"
-
-conda activate AIF
-echo "Running AIF batch correction"
-python3 AIF/AIF.py \
-    --dataset_path "$dataset_path" \
-    --save_path "$save_path" \
-    --batch_key "$batch_key" \
-    --celltype_key "$celltype_key" \
-    --run_times "$n_runs"
-
-conda activate scMEDAL
-echo "Running scMEDAL batch correction"
-python3 scMEDAL/scmedal.py \
     --dataset_path "$dataset_path" \
     --save_path "$save_path" \
     --batch_key "$batch_key" \
