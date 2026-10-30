@@ -87,6 +87,42 @@ def generate_seed():
 # Post-Integration Utilities
 # ============================================================
 
+def save_embedding_artifact(
+    embedding, obs_names, save_path, tool_name, embed_key,
+):
+    """Save a cell-aligned, embedding-only AnnData artifact."""
+    if isinstance(embedding, pd.DataFrame):
+        embedding = embedding.to_numpy()
+    elif issparse(embedding):
+        embedding = embedding.toarray()
+    embedding = np.asarray(embedding, dtype=np.float32)
+    obs_names = pd.Index(obs_names).astype(str)
+
+    if embedding.ndim != 2 or embedding.shape[0] != len(obs_names):
+        raise ValueError(
+            f"{tool_name} returned invalid embedding shape {embedding.shape}"
+        )
+    if not obs_names.is_unique or not np.isfinite(embedding).all():
+        raise ValueError(f"{tool_name} embedding has invalid cells or values")
+
+    artifact = sc.AnnData(
+        X=embedding,
+        obs=pd.DataFrame(index=obs_names),
+        var=pd.DataFrame(
+            index=[f"latent_{index:03d}" for index in range(embedding.shape[1])]
+        ),
+    )
+    artifact.uns.update(method=tool_name, embedding_key=embed_key)
+
+    final_path = os.path.join(save_path, f"{tool_name}_embedding.h5ad")
+    temporary_path = os.path.join(
+        save_path, f".{tool_name}_embedding.tmp.h5ad"
+    )
+    artifact.write_h5ad(temporary_path, compression="gzip")
+    os.replace(temporary_path, final_path)
+    return final_path
+
+
 def compute_umap_and_save(adata, use_rep, seed, batch_key, celltype_key, save_path):
     """Compute neighbors + UMAP, then save UMAP coordinates to CSV."""
     sc.pp.neighbors(adata, use_rep=use_rep, random_state=seed)
@@ -117,6 +153,7 @@ def _run_outputs_are_complete(run_out_path, tool_name):
     required_paths = (
         metrics_path,
         umap_path,
+        os.path.join(run_out_path, f"{tool_name}_embedding.h5ad"),
         os.path.join(run_out_path, "resolution_search.csv"),
         os.path.join(run_out_path, f"{tool_name}_umap_batch.png"),
         os.path.join(run_out_path, f"{tool_name}_umap_celltype.png"),
@@ -389,6 +426,14 @@ def run_integration_pipeline(tool_name, integrate_fn, embed_key, args,
             else:
                 raw_pca_df = pd.DataFrame(raw_pca, index=pre_obs_names)
                 adata.obsm['X_pca'] = raw_pca_df.reindex(adata.obs_names).values
+
+        save_embedding_artifact(
+            adata.obsm[embed_key],
+            adata.obs_names,
+            run_out_path,
+            tool_name,
+            embed_key,
+        )
 
         # --- Post-integration evaluation ---
         compute_umap_and_save(adata, embed_key, evaluation_seed,
