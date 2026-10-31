@@ -8,7 +8,7 @@ The framework standardizes data loading, input validation, seed management, exec
 The shared utilities provide reusable interfaces for data handling, repeated execution, evaluation, visualization, resource tracking, and result reporting. New methods can be added by implementing the train/predict wrapper interface defined in [`utils/pipeline.py`](utils/pipeline.py), without duplicating the common benchmark logic.
 
 This benchmark is intended to provide a reproducible comparison framework rather than an exhaustive catalog of available cell-type annotation methods.
-## Methods List
+## Included Methods
 
 Methods are grouped by their primary methodological approach. Because several methods combine multiple model architectures or training objectives, these categories describe their dominant design and are not necessarily mutually exclusive.
 
