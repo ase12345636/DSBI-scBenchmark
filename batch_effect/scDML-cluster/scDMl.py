@@ -107,10 +107,10 @@ def integrate_scdml(adata, seed, run_out_path, args):
 
 
 if __name__ == '__main__':
-    parser = create_argument_parser('scDML')
+    parser = create_argument_parser('scDML-cluster')
     args = parser.parse_args()
     run_integration_pipeline(
-        "scDML",
+        "scDML-cluster",
         integrate_scdml,
         "X_emb",
         args,
