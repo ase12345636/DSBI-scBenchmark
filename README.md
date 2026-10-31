@@ -1,4 +1,4 @@
-# Single-Cell Benchmark
+# Single-Cell Analysis Benchmark
 
 This repository contains independent benchmarking frameworks for single-cell analysis. Each suite provides method-specific wrappers, repeated execution, resource monitoring, and a shared downstream evaluation workflow.
 
