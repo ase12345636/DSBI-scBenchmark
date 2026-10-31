@@ -23,6 +23,15 @@ from utils.pipeline import (
 
 PREDICTION_CHUNK_SIZE = 2_048
 
+# Fixed to the official annotation tutorial. These values remain attached to
+# the shared argparse namespace so existing run signatures stay unchanged.
+SCGPT_SETTINGS = {
+    "epochs": model_impl.DEFAULT_EPOCHS,
+    "batch_size": model_impl.DEFAULT_BATCH_SIZE,
+    "lr": model_impl.DEFAULT_LR,
+    "schedule_ratio": model_impl.DEFAULT_SCHEDULE_RATIO,
+}
+
 
 def _preprocess_adata(
     adata, vocab, *, raw_counts=None, genes_already_filtered=False,
@@ -285,12 +294,7 @@ def find_pretrained_model():
 if __name__ == "__main__":
     parser = create_argument_parser("scGPT", include_n_jobs=True)
     parser.add_argument("--scgpt_model_dir", type=Path, default=None)
-    parser.add_argument("--epochs", type=int, default=model_impl.DEFAULT_EPOCHS)
-    parser.add_argument("--batch_size", type=int, default=model_impl.DEFAULT_BATCH_SIZE)
-    parser.add_argument("--lr", type=float, default=model_impl.DEFAULT_LR)
-    parser.add_argument(
-        "--schedule_ratio", type=float, default=model_impl.DEFAULT_SCHEDULE_RATIO
-    )
+    parser.set_defaults(**SCGPT_SETTINGS)
     arguments = parser.parse_args()
     if arguments.scgpt_model_dir is None:
         arguments.scgpt_model_dir = find_pretrained_model()

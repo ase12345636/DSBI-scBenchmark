@@ -539,8 +539,7 @@ If Conda is not available in `PATH`, specify its installation directory:
 export CONDA_BASE="<conda_path>"
 ```
 
-Run the benchmark with the following command. Replace each value enclosed in angle
-brackets (`<...>`) with the corresponding value for your dataset:
+Run the benchmark with the following command. Replace each value enclosed in angle brackets (`<...>`) with the corresponding value for your dataset:
 
 ```bash
 bash run_script.sh \
@@ -551,41 +550,25 @@ bash run_script.sh \
   --n_runs "<repeat_time>"
 ```
 
-`--dataset_path` and `--save_path` are required. `--batch_key`,
-`--celltype_key`, and `--n_runs` are optional and default to `batch`,
-`celltype`, and `5`, respectively. The batch and cell-type keys must
-correspond to columns in `adata.obs`.
+`--dataset_path` and `--save_path` are required. `--batch_key`, `--celltype_key`, and `--n_runs` are optional and default to `batch`, `celltype`, and `5`, respectively. The batch and cell-type keys must correspond to columns in `adata.obs`.
 
-The launcher runs all included methods in sequence. Raw is evaluated once,
-whereas the remaining methods use `--n_runs`. Runs with complete output files
-are skipped automatically when the command is repeated.
+The launcher runs all included methods in sequence. Raw is evaluated once, whereas the remaining methods use `--n_runs`. Runs with complete output files are skipped automatically when the command is repeated.
 
 ### Adding New Methods
 
-Add each method through a thin wrapper that reuses the shared pipeline. The
-wrapper should contain only method-specific preprocessing and integration;
-shared QC, repeated execution, resource monitoring, output organization, and
-evaluation are handled by [`utils/pipeline.py`](utils/pipeline.py). Use
-[`Harmony/Harmony.py`](Harmony/Harmony.py) as a Python example and
-[`Seurat/Seurat.py`](Seurat/Seurat.py) as an external-process example.
+Add each method through a thin wrapper that reuses the shared pipeline. The wrapper should contain only method-specific preprocessing and integration; shared QC, repeated execution, resource monitoring, output organization, and evaluation are handled by [`utils/pipeline.py`](utils/pipeline.py). Use [`Harmony/Harmony.py`](Harmony/Harmony.py) as a Python example and [`Seurat/Seurat.py`](Seurat/Seurat.py) as an external-process example.
 
 A wrapper must:
 
-- create `<Method>/<Method>.py` under the repository root and import
-  `create_argument_parser` and `run_integration_pipeline` from
-  `utils.pipeline`;
-- create the common command-line interface with
-  `create_argument_parser("<Method>")`; method-specific arguments may be added
-  before calling `parse_args()`;
-- optionally implement deterministic preprocessing as
-  `preprocess_method(adata, celltype_key, batch_key) -> AnnData`; this function
-  runs once before repeated runs and before runtime and memory measurement, so
-  seed-dependent work must remain inside the integration function;
-- implement `integrate_method(adata, seed, run_out_path, args) -> AnnData` and
-  use the supplied `seed` for method-specific randomness; and
-- store a finite two-dimensional representation in `adata.obsm[embed_key]`,
-  with one row per returned cell. If cells are filtered or reordered, their
-  `adata.obs_names` must remain correctly aligned.
+- create `<Method>/<Method>.py` under the repository root and import `create_argument_parser` and `run_integration_pipeline` from `utils.pipeline`;
+
+- create the common command-line interface with `create_argument_parser("<Method>")`; method-specific arguments may be added before calling `parse_args()`;
+
+- optionally implement deterministic preprocessing as `preprocess_method(adata, celltype_key, batch_key) -> AnnData`; this function runs once before repeated runs and before runtime and memory measurement, so seed-dependent work must remain inside the integration function;
+
+- implement `integrate_method(adata, seed, run_out_path, args) -> AnnData` and use the supplied `seed` for method-specific randomness; and
+
+- store a finite two-dimensional representation in `adata.obsm[embed_key]`, with one row per returned cell. If cells are filtered or reordered, their `adata.obs_names` must remain correctly aligned.
 
 Connect the wrapper to the shared pipeline as follows:
 
@@ -603,15 +586,6 @@ run_integration_pipeline(
 )
 ```
 
-Omit `preprocess_fn` when no method-specific preprocessing is required. Set
-`run_pca=True` only when the method requires the shared pipeline to create
-`adata.obsm["X_pca"]` before timing. Use the same method name consistently; it
-determines the result directory and metrics filename prefix.
+Omit `preprocess_fn` when no method-specific preprocessing is required. Set `run_pca=True` only when the method requires the shared pipeline to create `adata.obsm["X_pca"]` before timing. Use the same method name consistently; it determines the result directory and metrics filename prefix.
 
-Finally, create and document a compatible Conda environment containing the
-method-specific and common pipeline dependencies. Add its activation and
-wrapper command to `run_script.sh`, and forward the standard dataset, output,
-annotation-key, and run-count arguments. Also update the Included Methods and
-Environment Installation sections. Before adding the method to the full
-launcher, run the wrapper once with `--run_times 1` and confirm that the metrics,
-UMAP coordinates, resolution search, and UMAP figures are produced.
+Finally, create and document a compatible Conda environment containing the method-specific and common pipeline dependencies. Add its activation and wrapper command to `run_script.sh`, and forward the standard dataset, output, annotation-key, and run-count arguments. Also update the Included Methods and Environment Installation sections. Before adding the method to the full launcher, run the wrapper once with `--run_times 1` and confirm that the metrics, UMAP coordinates, resolution search, and UMAP figures are produced.

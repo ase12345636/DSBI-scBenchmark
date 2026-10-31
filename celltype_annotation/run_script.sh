@@ -2,9 +2,26 @@
 set -eo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
 
-source /Group16T/common/ccuc/miniconda3_gb10/etc/profile.d/conda.sh
+if [[ -z "${CONDA_BASE:-}" ]]; then
+    if ! command -v conda >/dev/null 2>&1; then
+        echo "Error: conda is not available in PATH." >&2
+        exit 1
+    fi
+    CONDA_BASE="$(conda info --base)"
+fi
+
+CONDA_SH="$CONDA_BASE/etc/profile.d/conda.sh"
+
+if [[ ! -f "$CONDA_SH" ]]; then
+    echo "Error: Conda initialization script not found: $CONDA_SH" >&2
+    exit 1
+fi
+
+source "$CONDA_SH"
+conda activate sctools
+
+cd "$SCRIPT_DIR"
 
 train_path=""
 test_path=""
@@ -99,7 +116,7 @@ echo "Train batch: $train_batch"
 echo "Test batch: $test_batch"
 echo "Test batch map: $test_batch_map"
 
-conda activate Celltypist
+conda activate sctools
 echo "Running Celltypist cell type annotation"
 python3 Celltypist/Celltypist.py \
     --train_path "$train_path" \
